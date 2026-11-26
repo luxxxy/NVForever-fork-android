@@ -1284,6 +1284,12 @@ fn apply_android_performance_policy(world: &mut World) {
     if let Some(mut pace) = world.get_resource_mut::<crate::frame_pace::FramePace>() {
         pace.cap = 30;
     }
+    if let Some(mut msaa) = world.get_resource_mut::<graphics::MsaaSetting>() {
+        msaa.0 = Msaa::Off;
+    }
+    // GraphicsPlugin's desktop-compatible default is 8x anisotropy when the
+    // enhanced switch is off; mobile does not need to pay that sampling cost.
+    nvf_assets::texture::set_anisotropy(1);
     if let Some(mut sky) = world.get_resource_mut::<crate::sky::SkyState>() {
         sky.shadows = false;
     }
