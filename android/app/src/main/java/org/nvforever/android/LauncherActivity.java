@@ -10,7 +10,6 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FileInputStream;
 import java.io.OutputStream;
-import java.util.Comparator;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import java.io.IOException;
