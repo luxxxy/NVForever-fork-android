@@ -1066,7 +1066,7 @@ pub fn drive(
     // items -> written -> jobs pipeline allocated three frame-sized vectors; only the
     // final job vector is needed by the parallel chunk mapper.
     let mut jobs = Vec::new();
-    for mut item in actors.iter_mut() {
+    for item in actors.iter_mut() {
         // Ask before any transforms are written this frame.
         let written = item.3.is_some() && item.1.written_since(&mut transforms);
         jobs.push((item, written));
