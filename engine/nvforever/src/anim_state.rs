@@ -93,6 +93,25 @@ struct AnimScratch {
     gone_list: Vec<u32>,
 }
 
+impl AnimScratch {
+    fn clip_path(&mut self, path: &str, clip: &nvf_assets::anim_play::Clip) -> String {
+        cached_clip_path(path, clip, &mut self.clip_paths, &mut self.told_info, &mut self.new_info)
+    }
+
+    fn collect_gone(&mut self) {
+        for &actor in &self.told {
+            if !self.now.contains(&actor) {
+                self.gone_list.push(actor);
+            }
+        }
+    }
+
+    fn finish_frame(&mut self) {
+        std::mem::swap(&mut self.told, &mut self.now);
+        self.now.clear();
+    }
+}
+
 /// At most this many "no longer told" and "told again" lines are logged [engineering
 /// choice: a cell change forgets every actor of the cell].
 const LOGGED_CHANGES: u32 = 40;
@@ -261,7 +280,7 @@ fn tell(
         // The clip its body plays, without the `meshes\` its path starts with (kNVSE's
         // sequence paths are under meshes).
         let clip = lo.and_then(|l| l.set.clips.get(&l.blend.cur.mv)).map(|c| {
-            cached_clip_path(&c.path, &c.bound.clip, &mut scratch.clip_paths, &mut scratch.told_info, &mut scratch.new_info)
+            scratch.clip_path(&c.path, &c.bound.clip)
         });
         let st = AnimState { action, moving, group, iron_sights: false, throwing: false, mine: false, forced_hit, at: 0.0, clip };
         if !scratch.told.contains(&rig.reference) && stats.actors.contains(&rig.reference) {
@@ -304,12 +323,12 @@ fn tell(
     let mine = throwing && combat.as_deref().is_some_and(|c| c.player_weapon_is_mine());
     let first_person = control.as_deref().is_none_or(|c| !c.third_person_view());
     let player_clip = body.as_deref().and_then(|b| b.active_clip(first_person)).map(|(path, clip)| {
-        cached_clip_path(path, clip, &mut scratch.clip_paths, &mut scratch.told_info, &mut scratch.new_info)
+        scratch.clip_path(path, clip)
     });
     let st = AnimState { action: weapon_action.or(idle_action).or(landing), moving, group: Some(group(moving, !walk)), iron_sights, throwing, mine, forced_hit: false, at: 0.0, clip: player_clip };
     stats.note(FormId::PLAYER_REF.0, &st);
     scratch.updates.push((FormId::PLAYER_REF, st));
-    scratch.gone_list.extend(scratch.told.difference(&scratch.now).copied());
+    scratch.collect_gone();
     for &gone in &scratch.gone_list {
         stats.forgotten += 1;
         if stats.forgotten <= LOGGED_CHANGES {
@@ -334,8 +353,8 @@ fn tell(
     }
     // Swap the current visible set with the previous frame's set, retaining both
     // allocations for reuse on the next update.
-    std::mem::swap(&mut scratch.told, &mut scratch.now);
-    scratch.now.clear();
+    drop(apply);
+    scratch.finish_frame();
 }
 
 #[cfg(test)]
