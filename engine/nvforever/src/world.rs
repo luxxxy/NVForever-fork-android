@@ -580,7 +580,7 @@ pub fn stream(
             finish_cell(&mut commands, &mut streamer, c, sp, fading);
         }
     }
-    if !streamer.settled && want.iter().all(|c| streamer.loaded.contains_key(c)) {
+    if !streamer.settled && scratch.want.iter().all(|c| streamer.loaded.contains_key(c)) {
         streamer.settled = true;
         streamer.arrival = None;
         if let Some(line) = streamer.ahead.start.settled_line() {
