@@ -530,8 +530,9 @@ pub fn stream(
         }
     }
 
-    scratch.missing.clear();
-    scratch.missing.extend(scratch.want.iter().filter(|c| !streamer.loaded.contains_key(c) && !streamer.spawning.contains_key(c)).copied());
+    let (missing, want) = (&mut scratch.missing, &scratch.want);
+    missing.clear();
+    missing.extend(want.iter().filter(|c| !streamer.loaded.contains_key(c) && !streamer.spawning.contains_key(c)).copied());
     scratch.missing.sort_by_key(|c| steps(c) * 1000 + (c.0 - centre.0).abs() + (c.1 - centre.1).abs());
     for (started, c) in scratch.missing.iter().copied().enumerate() {
         // Behind a loading screen: as many cells as fit in the frame's loading time.
