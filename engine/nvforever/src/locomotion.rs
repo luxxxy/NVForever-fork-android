@@ -1071,7 +1071,7 @@ pub fn drive(
         let written = item.3.is_some() && item.1.written_since(&mut transforms);
         jobs.push((item, written));
     }
-    let one_chunk = |chunk: &mut [(&mut ActorAnimItem, bool)]| {
+    let one_chunk = |chunk: &mut [(ActorAnimItem<'_, '_>, bool)]| {
         let mut c = ActorAnimCost::default();
         let (mut scratch, mut out) = (Vec::new(), Vec::new());
         for (item, written) in chunk.iter_mut() {
