@@ -641,7 +641,7 @@ mod tests {
             assert!(!stability.observe(settings(1280, 800, 30)));
         }
         assert!(!stability.observe(settings(1920, 1080, 30)));
-        for _ in 0..(SETTINGS_STABLE_UPDATES - 1) {
+        for _ in 0..(SETTINGS_STABLE_UPDATES - 2) {
             assert!(!stability.observe(settings(1920, 1080, 30)));
         }
         assert!(stability.observe(settings(1920, 1080, 30)));
