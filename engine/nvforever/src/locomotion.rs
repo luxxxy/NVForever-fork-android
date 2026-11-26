@@ -1062,11 +1062,15 @@ pub fn drive(
 ) {
     let t0 = std::time::Instant::now();
     let (dt, now) = (time.delta_secs(), time.elapsed_secs());
-    let mut items: Vec<_> = actors.iter_mut().collect();
-    // A dead actor's pose stands only while nothing else wrote its bones
-    // (`BlendPlayer::pose_held`): asked here, before anything is written.
-    let written: Vec<bool> = items.iter().map(|it| it.3.is_some() && it.1.written_since(&mut transforms)).collect();
-    let mut jobs: Vec<(_, bool)> = items.iter_mut().zip(written).collect();
+    // Collect query items and their dead-pose write state together. The previous
+    // items -> written -> jobs pipeline allocated three frame-sized vectors; only the
+    // final job vector is needed by the parallel chunk mapper.
+    let mut jobs = Vec::new();
+    for mut item in actors.iter_mut() {
+        // Ask before any transforms are written this frame.
+        let written = item.3.is_some() && item.1.written_since(&mut transforms);
+        jobs.push((item, written));
+    }
     let one_chunk = |chunk: &mut [(&mut ActorAnimItem, bool)]| {
         let mut c = ActorAnimCost::default();
         let (mut scratch, mut out) = (Vec::new(), Vec::new());
@@ -1075,9 +1079,10 @@ pub fn drive(
         }
         (c, out)
     };
-    let parts = if jobs.len() <= DRIVE_CHUNK { vec![one_chunk(&mut jobs)] } else { jobs.par_chunk_map_mut(ComputeTaskPool::get(), DRIVE_CHUNK, |_, chunk| one_chunk(chunk)) };
     let mut n = 0;
-    for (c, out) in parts {
+    if jobs.len() <= DRIVE_CHUNK {
+        // Avoid allocating a one-element Vec just to carry the serial result.
+        let (c, out) = one_chunk(&mut jobs);
         for (e, tr) in out {
             if let Ok(mut t) = transforms.get_mut(e) {
                 t.set_if_neq(tr);
@@ -1085,6 +1090,17 @@ pub fn drive(
         }
         n += c.actor_frames as usize;
         cost.absorb(&c);
+    } else {
+        let parts = jobs.par_chunk_map_mut(ComputeTaskPool::get(), DRIVE_CHUNK, |_, chunk| one_chunk(chunk));
+        for (c, out) in parts {
+            for (e, tr) in out {
+                if let Ok(mut t) = transforms.get_mut(e) {
+                    t.set_if_neq(tr);
+                }
+            }
+            n += c.actor_frames as usize;
+            cost.absorb(&c);
+        }
     }
     cost.total += t0.elapsed();
     cost.frames += 1;
