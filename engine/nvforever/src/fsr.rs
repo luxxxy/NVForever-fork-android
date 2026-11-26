@@ -335,8 +335,10 @@ pub(crate) fn prepare(
 }
 
 /// The masks' uniform (`fsr_reactive.wgsl` `jitter`): FSR's jitter, then two unused floats.
-fn mask_jitter_bytes(jitter: Vec2) -> Vec<u8> {
-    [jitter.x, jitter.y, 0.0, 0.0].into_iter().flat_map(f32::to_ne_bytes).collect()
+fn mask_jitter_bytes(jitter: Vec2) -> [u8; 16] {
+    let x = jitter.x.to_ne_bytes();
+    let y = jitter.y.to_ne_bytes();
+    [x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3], 0, 0, 0, 0, 0, 0, 0, 0]
 }
 
 fn on_off(on: bool) -> &'static str {
