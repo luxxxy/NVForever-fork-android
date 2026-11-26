@@ -308,6 +308,17 @@ impl FsrContext {
         encoder: &mut wgpu::CommandEncoder,
         info: &FsrDispatchInfo,
     ) -> Result<(), FsrDispatchError> {
+        self.dispatch_with_recorder(view, encoder, info, None)
+    }
+
+    /// Like dispatch, with optional per-compute-pass GPU timing.
+    pub fn dispatch_with_recorder(
+        &self,
+        view: &mut FsrView,
+        encoder: &mut wgpu::CommandEncoder,
+        info: &FsrDispatchInfo,
+        mut recorder: Option<&mut dyn FsrPassRecorder>,
+    ) -> Result<(), FsrDispatchError> {
         self.check(view, info)?;
 
         // NVForever (2026-11-11): kept bind groups not asked for in a while are dropped.
@@ -542,7 +553,19 @@ impl FsrContext {
             })
             .forget_lifetime();
 
-        self.pass_prepare_inputs.dispatch(
+        macro_rules! timed_dispatch {
+            ($name:literal, $dispatch:expr) => {{
+                if let Some(recorder) = recorder.as_deref_mut() {
+                    recorder.begin(&mut compute_pass, $name);
+                }
+                $dispatch;
+                if let Some(recorder) = recorder.as_deref_mut() {
+                    recorder.end(&mut compute_pass);
+                }
+            }};
+        }
+
+        timed_dispatch!("FSR Prepare Inputs", self.pass_prepare_inputs.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -551,8 +574,8 @@ impl FsrContext {
             view.frame_kind,
             workgroups_src_x,
             workgroups_src_y,
-        );
-        self.pass_luma_pyramid.dispatch(
+        ));
+        timed_dispatch!("FSR Luma Pyramid", self.pass_luma_pyramid.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -561,8 +584,8 @@ impl FsrContext {
             view.frame_kind,
             workgroups_spd_x,
             workgroups_spd_y,
-        );
-        self.pass_shading_change_pyramid.dispatch(
+        ));
+        timed_dispatch!("FSR Shading Change Pyramid", self.pass_shading_change_pyramid.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -571,8 +594,8 @@ impl FsrContext {
             view.frame_kind,
             workgroups_spd_x,
             workgroups_spd_y,
-        );
-        self.pass_shading_change.dispatch(
+        ));
+        timed_dispatch!("FSR Shading Change", self.pass_shading_change.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -581,8 +604,8 @@ impl FsrContext {
             view.frame_kind,
             workgroups_shading_change_x,
             workgroups_shading_change_y,
-        );
-        self.pass_prepare_reactivity.dispatch(
+        ));
+        timed_dispatch!("FSR Prepare Reactivity", self.pass_prepare_reactivity.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -591,8 +614,8 @@ impl FsrContext {
             view.frame_kind,
             workgroups_src_x,
             workgroups_src_y,
-        );
-        self.pass_luma_instability.dispatch(
+        ));
+        timed_dispatch!("FSR Luma Instability", self.pass_luma_instability.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -601,13 +624,13 @@ impl FsrContext {
             view.frame_kind,
             workgroups_src_x,
             workgroups_src_y,
-        );
+        ));
         let accumulate_pass = if info.enable_sharpening {
             &self.pass_accumulate_sharpen
         } else {
             &self.pass_accumulate
         };
-        accumulate_pass.dispatch(
+        timed_dispatch!("FSR Accumulate", accumulate_pass.dispatch(
             &self.device,
             &mut compute_pass,
             &view.resources,
@@ -616,14 +639,14 @@ impl FsrContext {
             view.frame_kind,
             workgroups_dst_x,
             workgroups_dst_y,
-        );
+        ));
         if info.enable_sharpening {
             let thread_group_work_region_dim_rcas = 16;
             let workgroups_rcas_x =
                 info.upscale_size[0].div_ceil(thread_group_work_region_dim_rcas);
             let workgroups_rcas_y =
                 info.upscale_size[1].div_ceil(thread_group_work_region_dim_rcas);
-            self.pass_rcas.dispatch(
+            timed_dispatch!("FSR RCAS", self.pass_rcas.dispatch(
                 &self.device,
                 &mut compute_pass,
                 &view.resources,
@@ -632,10 +655,10 @@ impl FsrContext {
                 view.frame_kind,
                 workgroups_rcas_x,
                 workgroups_rcas_y,
-            );
+            ));
         }
         if info.flags.contains(FsrDispatchFlags::DRAW_DEBUG_VIEW) {
-            self.pass_debug_view.dispatch(
+            timed_dispatch!("FSR Debug View", self.pass_debug_view.dispatch(
                 &self.device,
                 &mut compute_pass,
                 &view.resources,
@@ -644,7 +667,7 @@ impl FsrContext {
                 view.frame_kind,
                 workgroups_dst_x,
                 workgroups_dst_y,
-            );
+            ));
         }
 
         drop(compute_pass);
@@ -1015,6 +1038,14 @@ impl FsrContext {
 /// Contains all textures, buffers, camera parameters, and settings needed
 /// for a single upscaling frame. See the field documentation for format and
 /// size requirements.
+/// Optional hook for measuring the GPU time of each FSR compute dispatch.
+///
+/// The recorder is supplied by the host renderer; this crate does not depend on Bevy.
+pub trait FsrPassRecorder {
+    fn begin(&mut self, pass: &mut wgpu::ComputePass<'_>, name: &'static str);
+    fn end(&mut self, pass: &mut wgpu::ComputePass<'_>);
+}
+
 pub struct FsrDispatchInfo {
     /// A Texture containing the color buffer for the current frame (at render resolution).
     pub color: wgpu::Texture,
