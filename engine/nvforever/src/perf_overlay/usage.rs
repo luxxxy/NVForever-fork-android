@@ -123,7 +123,7 @@ impl Shared {
         self.want.store(bit(cpu, WANT_CPU) | bit(gpu, WANT_GPU) | bit(process_cpu, WANT_PROCESS_CPU) | bit(ram, WANT_RAM), Ordering::Relaxed);
     }
 
-    #[cfg_attr(not(any(windows, target_os = "linux")), allow(dead_code))]
+    #[cfg_attr(not(any(windows, target_os = "linux", target_os = "android")), allow(dead_code))]
     fn wants(&self, part: u8) -> bool {
         self.want.load(Ordering::Relaxed) & part != 0
     }
@@ -258,6 +258,13 @@ pub fn start() -> Arc<Shared> {
         let s = shared.clone();
         if let Err(e) = std::thread::Builder::new().name("fps-usage".into()).spawn(move || linux::run(&s)) {
             bevy::log::warn!("fps counter: no CPU/GPU usage thread: {e}");
+        }
+    }
+    #[cfg(target_os = "android")]
+    {
+        let s = shared.clone();
+        if let Err(e) = std::thread::Builder::new().name("fps-usage".into()).spawn(move || android::run(&s)) {
+            bevy::log::warn!("fps counter: no Android CPU/GPU usage thread: {e}");
         }
     }
     shared
@@ -902,5 +909,138 @@ mod tests {
         step(&s, &mut b, &mut src);
         assert_eq!((src.cpu_calls, src.gpu_calls, src.process_calls, src.ram_calls), (4, 2, 4, 5));
         assert_eq!(s.read(), Usage { gpu: Some(60.0), ..Usage::default() });
+    }
+}
+
+
+/// Android's /proc CPU and RSS counters plus Qualcomm KGSL GPU busy time. The GPU
+/// reading is intentionally absent on devices that expose no supported sysfs counter.
+#[cfg(target_os = "android")]
+mod android {
+    use std::fs;
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+
+    use super::{step, Baselines, Shared, Source};
+
+    const PERIOD: Duration = Duration::from_secs(1);
+
+    pub fn run(shared: &Shared) {
+        let mut src = Counters { cpu: None, gpu: None, start: Instant::now() };
+        if fs::read_to_string("/proc/stat").ok().and_then(|s| cpu_ticks(&s)).is_some() {
+            bevy::log::info!("fps counter: CPU source Android /proc/stat");
+        } else {
+            bevy::log::warn!("fps counter: Android CPU source Not available");
+        }
+        if Path::new("/sys/class/kgsl/kgsl-3d0/gpubusy").exists()
+            || Path::new("/sys/class/kgsl/kgsl-3d0/gpu_busy_percentage").exists()
+        {
+            bevy::log::info!("fps counter: GPU source Qualcomm KGSL");
+        } else {
+            bevy::log::warn!("fps counter: Android GPU source Not available; Vulkan timestamps remain the GPU-time source");
+        }
+        let mut baselines = Baselines::default();
+        loop {
+            let collected = step(shared, &mut baselines, &mut src);
+            std::thread::sleep(if collected { PERIOD } else { PERIOD / 4 });
+        }
+    }
+
+    struct Counters {
+        cpu: Option<(u64, u64)>,
+        gpu: Option<(u64, u64)>,
+        start: Instant,
+    }
+
+    impl Source for Counters {
+        fn machine_cpu(&mut self) -> Option<f32> {
+            let current = cpu_ticks(&fs::read_to_string("/proc/stat").ok()?)?;
+            let result = self.cpu.and_then(|(busy, total)| {
+                let db = current.0.saturating_sub(busy);
+                let dt = current.1.saturating_sub(total);
+                (dt > 0).then(|| (db as f32 * 100.0 / dt as f32).clamp(0.0, 100.0))
+            });
+            self.cpu = Some(current);
+            result
+        }
+
+        fn gpu(&mut self) -> Option<f32> {
+            let root = Path::new("/sys/class/kgsl/kgsl-3d0");
+            if let Ok(raw) = fs::read_to_string(root.join("gpubusy")) {
+                let mut values = raw.split_whitespace().filter_map(|v| v.parse::<u64>().ok());
+                if let (Some(busy), Some(total)) = (values.next(), values.next()) {
+                    let result = self.gpu.and_then(|(before_busy, before_total)| {
+                        let db = busy.saturating_sub(before_busy);
+                        let dt = total.saturating_sub(before_total);
+                        (dt > 0).then(|| (db as f32 * 100.0 / dt as f32).clamp(0.0, 100.0))
+                    });
+                    self.gpu = Some((busy, total));
+                    if result.is_some() {
+                        return result;
+                    }
+                }
+            }
+            // Some KGSL kernels expose a sampled percentage instead of cumulative busy time.
+            for name in ["gpu_busy_percentage", "devfreq/gpu_load"] {
+                if let Ok(raw) = fs::read_to_string(root.join(name)) {
+                    if let Ok(value) = raw.trim().trim_end_matches('%').parse::<f32>() {
+                        if value.is_finite() && (0.0..=100.0).contains(&value) {
+                            return Some(value);
+                        }
+                    }
+                }
+            }
+            None
+        }
+
+        fn forget(&mut self, cpu: bool, gpu: bool) {
+            if cpu { self.cpu = None; }
+            if gpu { self.gpu = None; }
+        }
+
+        fn process_cpu_secs(&mut self) -> Option<f64> {
+            crate::profile::process_cpu_secs()
+        }
+
+        fn working_set_mb(&mut self) -> Option<u64> {
+            let status = fs::read_to_string("/proc/self/status").ok()?;
+            let kb = status.lines().find(|line| line.starts_with("VmRSS:"))?
+                .split_whitespace().nth(1)?.parse::<u64>().ok()?;
+            Some(kb / 1024)
+        }
+
+        fn now(&mut self) -> f64 {
+            self.start.elapsed().as_secs_f64()
+        }
+    }
+
+    fn cpu_ticks(stat: &str) -> Option<(u64, u64)> {
+        let line = stat.lines().find(|line| line.starts_with("cpu "))?;
+        let mut fields = line.split_whitespace();
+        if fields.next()? != "cpu" { return None; }
+        let values: Vec<u64> = fields.take(8).map(str::parse).collect::<Result<_, _>>().ok()?;
+        if values.len() < 8 { return None; }
+        let total: u64 = values.iter().sum();
+        let idle = values[3].saturating_add(values[4]);
+        Some((total.saturating_sub(idle), total))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn cpu_ticks_exclude_idle_and_iowait() {
+            assert_eq!(cpu_ticks("cpu  100 10 20 50 5 2 3 4 0 0\ncpu0 1 2 3 4 5 6 7 8 0 0"), Some((139, 194)));
+        }
+
+        #[test]
+        fn gpu_busy_delta_is_a_percentage() {
+            let before = (100, 200);
+            let after = (160, 300);
+            let busy = after.0 - before.0;
+            let total = after.1 - before.1;
+            assert_eq!(busy as f32 * 100.0 / total as f32, 60.0);
+        }
     }
 }
