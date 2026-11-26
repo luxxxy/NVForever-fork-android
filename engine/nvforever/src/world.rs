@@ -388,7 +388,7 @@ struct StreamScratch {
     missing: Vec<(i32, i32)>,
 }
 
-type StreamActors<'w> = (Option<Res<'w, crate::actors::ActorWorld>>, Option<Res<'w, nvf_play::sim::SimState>>, ResMut<'w, crate::readahead::ReadAhead>, Res<'w, crate::stream_pace::StreamPace>, Local<'w, StreamScratch>);
+type StreamActors<'w, 's> = (Option<Res<'w, crate::actors::ActorWorld>>, Option<Res<'w, nvf_play::sim::SimState>>, ResMut<'w, crate::readahead::ReadAhead>, Res<'w, crate::stream_pace::StreamPace>, Local<'s, StreamScratch>);
 
 #[allow(clippy::too_many_arguments)]
 pub fn stream(
@@ -404,7 +404,7 @@ pub fn stream(
     mut grass: crate::grass::GrassCtx,
     mut emittance: ResMut<crate::emittance::EmittanceState>,
     time: Res<Time>,
-    (actor_world, sim, mut ahead, pace, mut scratch): StreamActors,
+    (actor_world, sim, mut ahead, pace, mut scratch): StreamActors<'_, '_>,
     mut actor_parts: ResMut<ActorParts>,
     loading: Option<Res<nvf_play::loading::Loading>>,
     children: Query<&Children>,
