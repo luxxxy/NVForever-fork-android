@@ -92,6 +92,7 @@ def main() -> None:
                "-p", package, "--lib", "--target", TARGET, "--locked"]
     if args.tests:
         command.append("--tests")
+    command.extend(["--features", "nvforever/profile"])
     if not args.check:
         command.extend(["--profile", args.profile])
     subprocess.run(command, cwd=ROOT, env=env, check=True)
