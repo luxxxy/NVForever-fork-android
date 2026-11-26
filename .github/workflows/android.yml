@@ -47,6 +47,37 @@ jobs:
           echo "JAVA_HOME=$JAVA_HOME_17_X64" >> "$GITHUB_ENV"
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" 'platforms;android-35' 'build-tools;35.0.1' 'ndk;28.2.13676358'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+      - name: Configure existing Preview signing key
+        shell: bash
+        env:
+          NVF_ANDROID_KEYSTORE_BASE64: ${{ secrets.NVF_ANDROID_KEYSTORE_BASE64 }}
+          NVF_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.NVF_ANDROID_KEYSTORE_PASSWORD }}
+          NVF_ANDROID_KEY_ALIAS: ${{ secrets.NVF_ANDROID_KEY_ALIAS }}
+          NVF_ANDROID_KEY_PASSWORD: ${{ secrets.NVF_ANDROID_KEY_PASSWORD }}
+        run: |
+          values=( "$NVF_ANDROID_KEYSTORE_BASE64" "$NVF_ANDROID_KEYSTORE_PASSWORD" "$NVF_ANDROID_KEY_ALIAS" "$NVF_ANDROID_KEY_PASSWORD" )
+          present=0
+          for value in "${values[@]}"; do
+            if [[ -n "$value" ]]; then present=$((present + 1)); fi
+          done
+          if [[ "$present" -eq 0 ]]; then
+            echo "Preview signing secrets are not configured; producing CI-only builds with the temporary debug key."
+            exit 0
+          fi
+          if [[ "$present" -ne 4 ]]; then
+            echo "Incomplete Preview signing secrets; configure all four repository secrets." >&2
+            exit 1
+          fi
+          keystore="$RUNNER_TEMP/nvforever-preview-signing.jks"
+          printf '%s' "$NVF_ANDROID_KEYSTORE_BASE64" | base64 --decode > "$keystore"
+          chmod 600 "$keystore"
+          keytool -list -keystore "$keystore" -storepass "$NVF_ANDROID_KEYSTORE_PASSWORD" -alias "$NVF_ANDROID_KEY_ALIAS" >/dev/null
+          {
+            echo "NVF_ANDROID_KEYSTORE_PATH=$keystore"
+            echo "NVF_ANDROID_KEYSTORE_PASSWORD=$NVF_ANDROID_KEYSTORE_PASSWORD"
+            echo "NVF_ANDROID_KEY_ALIAS=$NVF_ANDROID_KEY_ALIAS"
+            echo "NVF_ANDROID_KEY_PASSWORD=$NVF_ANDROID_KEY_PASSWORD"
+          } >> "$GITHUB_ENV"
       - name: Verified Gradle 8.11.1
         shell: bash
         run: |
@@ -94,7 +125,14 @@ jobs:
           tools="$ANDROID_HOME/build-tools/35.0.1"
           debug=android/app/build/outputs/apk/debug/app-debug.apk
           release=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          if [[ -f android/app/build/outputs/apk/release/app-release.apk ]]; then
+            release=android/app/build/outputs/apk/release/app-release.apk
+          fi
           "$tools/apksigner" verify --verbose "$debug"
+          if [[ -n "${NVF_ANDROID_KEYSTORE_PATH:-}" ]]; then
+            test "$release" = "android/app/build/outputs/apk/release/app-release.apk"
+            "$tools/apksigner" verify --verbose "$release"
+          fi
           for apk in "$debug" "$release"; do
             manifest=$("$tools/aapt2" dump xmltree --file AndroidManifest.xml "$apk")
             grep -Eq '^[[:space:]]*A: (http://schemas\.android\.com/apk/res/)?android:usesCleartextTraffic\(0x010104ec\)=false[[:space:]]*$' <<< "$manifest"
