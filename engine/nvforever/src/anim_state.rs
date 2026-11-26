@@ -223,7 +223,7 @@ fn tell(
     let clock = time.elapsed_secs();
     // Reuse per-system scratch storage. This system runs every frame and can visit many
     // actors; fresh HashSets and Vecs here otherwise allocate/free on every update.
-    scratch.scratch.now.clear();
+    scratch.now.clear();
     scratch.updates.clear();
     scratch.new_info.clear();
     scratch.gone_list.clear();
@@ -292,13 +292,13 @@ fn tell(
     let landing = body.as_deref().is_some_and(|b| b.landing()).then_some(AnimAction::WaitForSpecialIdle);
     // IsPlayerActionActive 2 from a throw's first frame of 5 (`THROW_ACTION_SECONDS`).
     let winding = weapon_action == Some(AnimAction::ThrowWindUp);
-    let was_winding = throw_began.is_some_and(|(_, w)| w);
-    let began = match *scratch.throw_began {
+    let was_winding = scratch.throw_began.is_some_and(|(_, w)| w);
+    let began = match scratch.throw_began {
         Some((t, _)) if !winding || was_winding => t,
         _ if winding => clock,
         _ => f32::NEG_INFINITY,
     };
-    *scratch.throw_began = Some((began, winding));
+    scratch.throw_began = Some((began, winding));
     let throwing = clock - began < fnv_game::anim_state::THROW_ACTION_SECONDS;
     // IsPlayerActionActive 4 instead of 2 for a mine (a land mine or mine drop weapon).
     let mine = throwing && combat.as_deref().is_some_and(|c| c.player_weapon_is_mine());
@@ -335,7 +335,7 @@ fn tell(
     // Swap the current visible set with the previous frame's set, retaining both
     // allocations for reuse on the next update.
     std::mem::swap(&mut scratch.told, &mut scratch.now);
-    scratch.scratch.now.clear();
+    scratch.now.clear();
 }
 
 #[cfg(test)]
