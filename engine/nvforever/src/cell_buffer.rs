@@ -52,9 +52,10 @@ pub struct CellBuffer {
     /// and the exterior cells whose doors were looked at.
     behind_doors: HashSet<u32>,
     doors_seen: HashSet<(u32, (i32, i32))>,
-    /// Cells actors walked into this frame ([`CellBuffer::carry`]), taken in at the next
-    /// [`CellBuffer::remember`].
-    carried: std::sync::Mutex<Vec<Key>>,
+    /// Distinct cells actors walked into this frame ([`CellBuffer::carry`]), taken in at
+    /// the next [`CellBuffer::remember`]. A set makes per-actor membership checks O(1)
+    /// instead of scanning a growing vector, and coalesces repeated entries for a cell.
+    carried: std::sync::Mutex<HashSet<Key>>,
 }
 
 impl CellBuffer {
@@ -92,7 +93,7 @@ impl CellBuffer {
     /// from now (module notes).
     pub fn carry(&self, space: Space, feet: [f32; 3]) {
         if let Ok(mut c) = self.carried.lock() {
-            c.push(key(space, feet));
+            c.insert(key(space, feet));
         }
     }
 
@@ -133,7 +134,7 @@ impl CellBuffer {
 }
 
 /// A cell of the buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Key {
     Exterior(u32, (i32, i32)),
     Interior(u32),
