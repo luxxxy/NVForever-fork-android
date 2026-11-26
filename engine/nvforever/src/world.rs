@@ -379,6 +379,15 @@ pub fn setup_root(mut commands: Commands) {
 
 /// [`stream`]'s actor resources and the frame's pace, as one parameter (a system takes at
 /// most 16).
+#[derive(Default)]
+struct StreamScratch {
+    want: HashSet<(i32, i32)>,
+    far: Vec<(i32, i32)>,
+    gone: Vec<(i32, i32)>,
+    order: Vec<(i32, i32)>,
+    missing: Vec<(i32, i32)>,
+}
+
 type StreamActors<'w> = (Option<Res<'w, crate::actors::ActorWorld>>, Option<Res<'w, nvf_play::sim::SimState>>, ResMut<'w, crate::readahead::ReadAhead>, Res<'w, crate::stream_pace::StreamPace>);
 
 #[allow(clippy::too_many_arguments)]
@@ -399,6 +408,7 @@ pub fn stream(
     mut actor_parts: ResMut<ActorParts>,
     loading: Option<Res<nvf_play::loading::Loading>>,
     children: Query<&Children>,
+    mut scratch: Local<StreamScratch>,
 ) {
     let (Ok(root), Ok(cam)) = (root.single(), camera.single()) else { return };
     streamer.stats.frames += 1;
@@ -433,42 +443,44 @@ pub fn stream(
     let centre = streamer.arrival.unwrap_or_else(|| cell_of(g.x, g.y));
     streamer.centre = Some(centre);
     let r = streamer.radius;
-    let want: HashSet<(i32, i32)> =
-        (-r..=r).flat_map(|dx| (-r..=r).map(move |dy| (centre.0 + dx, centre.1 + dy))).collect();
+    scratch.want.clear();
+    scratch.want.extend((-r..=r).flat_map(|dx| (-r..=r).map(move |dy| (centre.0 + dx, centre.1 + dy))));
     let steps = |c: &(i32, i32)| (c.0 - centre.0).abs().max((c.1 - centre.1).abs());
 
     // Unload with one cell of hysteresis, fading out first (fade.rs). A cell still being
     // spawned is dropped at once: it has not been shown.
-    let far: Vec<(i32, i32)> = streamer.loaded.keys().filter(|c| steps(c) > r + 1).copied().collect();
+    scratch.far.clear();
+    scratch.far.extend(streamer.loaded.keys().filter(|c| steps(c) > r + 1).copied());
     let fading = streamer.fade_secs > 0.0;
-    for c in far {
+    for &c in &scratch.far {
         if fading {
             streamer.fades.entry(c).or_insert(CellFade::new(1.0, true)).leaving = true;
         } else if let Some(e) = streamer.loaded.remove(&c) {
             retire(&mut commands, &mut streamer.dying, e);
         }
     }
-    let gone: Vec<(i32, i32)> = streamer.spawning.keys().filter(|c| steps(c) > r + 1).copied().collect();
-    for c in gone {
+    scratch.gone.clear();
+    scratch.gone.extend(streamer.spawning.keys().filter(|c| steps(c) > r + 1).copied());
+    for &c in &scratch.gone {
         if let Some(sp) = streamer.spawning.remove(&c) {
             retire(&mut commands, &mut streamer.dying, sp.entity);
         }
     }
     // Cells wanted again while fading out fade back in.
-    for c in &want {
+    for c in &scratch.want {
         if let Some(f) = streamer.fades.get_mut(c) {
             f.leaving = false;
         }
     }
     let rate = if fading { time.delta_secs() / streamer.fade_secs } else { 1.0 };
-    let mut gone = Vec::new();
+    scratch.gone.clear();
     for (c, f) in &mut streamer.fades {
         f.level = (f.level + if f.leaving { -rate } else { rate }).clamp(0.0, 1.0);
         if f.leaving && f.level <= 0.0 {
-            gone.push(*c);
+            scratch.gone.push(*c);
         }
     }
-    for c in gone {
+    for c in scratch.gone.drain(..) {
         streamer.fades.remove(&c);
         if let Some(e) = streamer.loaded.remove(&c) {
             retire(&mut commands, &mut streamer.dying, e);
@@ -489,9 +501,10 @@ pub fn stream(
     let budgeted = streamer.settled && !behind_screen;
     let deadline = frame_start + if budgeted { pace.time(SPAWN_BUDGET) } else { LOADING_SCREEN_FRAME };
     // Cells under way first, nearest first.
-    let mut order: Vec<(i32, i32)> = streamer.spawning.keys().copied().collect();
-    order.sort_by_key(|c| steps(c) * 1000 + (c.0 - centre.0).abs() + (c.1 - centre.1).abs());
-    for c in order {
+    scratch.order.clear();
+    scratch.order.extend(streamer.spawning.keys().copied());
+    scratch.order.sort_by_key(|c| steps(c) * 1000 + (c.0 - centre.0).abs() + (c.1 - centre.1).abs());
+    for c in scratch.order.iter().copied() {
         if budgeted && std::time::Instant::now() >= deadline {
             break;
         }
@@ -518,10 +531,10 @@ pub fn stream(
         }
     }
 
-    let mut missing: Vec<(i32, i32)> =
-        want.iter().filter(|c| !streamer.loaded.contains_key(c) && !streamer.spawning.contains_key(c)).copied().collect();
-    missing.sort_by_key(|c| steps(c) * 1000 + (c.0 - centre.0).abs() + (c.1 - centre.1).abs());
-    for (started, c) in missing.into_iter().enumerate() {
+    scratch.missing.clear();
+    scratch.missing.extend(scratch.want.iter().filter(|c| !streamer.loaded.contains_key(c) && !streamer.spawning.contains_key(c)).copied());
+    scratch.missing.sort_by_key(|c| steps(c) * 1000 + (c.0 - centre.0).abs() + (c.1 - centre.1).abs());
+    for (started, c) in scratch.missing.iter().copied().enumerate() {
         // Behind a loading screen: as many cells as fit in the frame's loading time.
         if !budgeted && started >= streamer.per_frame && !(behind_screen && frame_start.elapsed() < LOADING_SCREEN_FRAME) {
             break;
