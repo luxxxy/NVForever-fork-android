@@ -1667,6 +1667,11 @@ fn run_with_args(line: Vec<String>) -> AppExit {
     }
     sky_state.load_plugin_inis(&game.vfs);
     sky_state.shadows = (args.sun_shadows.is_some() || (args.play && !args.no_sun_shadows)) && args.shadow_distance > 0.0;
+    // Disable the sun shadow-map pass in the Android performance baseline.
+    #[cfg(target_os = "android")]
+    {
+        sky_state.shadows = false;
+    }
     let performance_shadows = args.sun_shadows == Some(shadow_rate::SunShadowMode::Performance);
     if performance_shadows {
         sky_state.shadow_layout = sky::CascadeLayout::Performance;
@@ -1864,6 +1869,33 @@ fn run_with_args(line: Vec<String>) -> AppExit {
     if let Some(level) = args.ambient_occlusion {
         graphics.ambient_occlusion = true;
         graphics.ambient_occlusion_level = level;
+    }
+    // Android low-GPU baseline: skip expensive optional full-screen and reflection passes.
+    #[cfg(target_os = "android")]
+    {
+        graphics.ambient_occlusion = false;
+        graphics.fine_shadows = false;
+        graphics.bloom = false;
+        graphics.glow = false;
+        graphics.eye_adaptation = false;
+        graphics.neon_glow = false;
+        graphics.sharpen = false;
+        graphics.anisotropic = false;
+        graphics.screen_aa = graphics::ScreenAa::Off;
+        graphics.light_shafts = false;
+        graphics.water_reflections = false;
+        graphics.water_effects = false;
+        graphics.water_mirror = false;
+        graphics.shadow_filter = bevy::light::ShadowFilteringMethod::Hardware2x2;
+        graphics.cloud_shadows = false;
+        graphics.terrain_shadows = false;
+        graphics.volumetric_clouds = false;
+        graphics.volumetric_light = false;
+        graphics.aerial_perspective = false;
+        graphics.night_sky_detail = false;
+        graphics.distant_lights = false;
+        graphics.distant_objects = crate::distant_objects::DistantObjects::Off;
+        graphics.full_detail = crate::full_detail::FullDetail::Off;
     }
     let frame_times = match (args.log_frame_times, args.graphics_cycle.as_deref()) {
         (None, _) => None,
