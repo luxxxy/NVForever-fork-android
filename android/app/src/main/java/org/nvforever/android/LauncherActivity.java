@@ -84,6 +84,40 @@ public final class LauncherActivity extends Activity {
         }
     }
 
+    /** Export the capture as plain NDJSON so it can be inspected without unpacking a ZIP. */
+    void exportFrameCapture() {
+        if (busy || runningGame()) {
+            if (launcher != null) launcher.message("Close the game before exporting its performance capture.");
+            return;
+        }
+        File logs = new File(getFilesDir(), "home/logs");
+        File capture = newest(logs.listFiles((dir, name) -> name.startsWith("frame-telemetry-") && name.endsWith(".jsonl")));
+        if (capture == null) {
+            if (launcher != null) launcher.message("No performance capture yet. Launch the game, let it run for at least 60 seconds, then return here.");
+            return;
+        }
+        File copy = null;
+        try {
+            copy = File.createTempFile("nvforever-frame-capture-", ".jsonl", getCacheDir());
+            try (InputStream in = new FileInputStream(capture);
+                 OutputStream out = new FileOutputStream(copy)) {
+                byte[] buffer = new byte[32768];
+                int count;
+                while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            }
+            pendingDiagnostics = copy;
+            Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType("application/x-ndjson")
+                .putExtra(Intent.EXTRA_TITLE, "NVForever-frame-telemetry.jsonl");
+            startActivityForResult(save, EXPORT_DIAGNOSTICS);
+        } catch (IOException | android.content.ActivityNotFoundException error) {
+            pendingDiagnostics = null;
+            if (copy != null) copy.delete();
+            if (launcher != null) launcher.message("Could not prepare frame capture: " + error.getMessage());
+        }
+    }
+
     private static File newest(File[] files) {
         if (files == null) return null;
         File result = null;
@@ -111,7 +145,7 @@ public final class LauncherActivity extends Activity {
             byte[] buffer = new byte[32768];
             int count;
             while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
-            if (launcher != null) launcher.message("Performance diagnostics exported. Attach the ZIP here so I can analyze the capture.");
+            if (launcher != null) launcher.message("Diagnostics file exported. You can share the file or place it in Dropbox for analysis.");
         } catch (IOException error) {
             if (launcher != null) launcher.message("Could not save diagnostics: " + error.getMessage());
         } finally {
