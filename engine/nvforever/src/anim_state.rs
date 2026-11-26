@@ -81,6 +81,18 @@ struct AnimStats {
     again: u32,
 }
 
+#[derive(Default)]
+struct AnimScratch {
+    told: HashSet<u32>,
+    throw_began: Option<(f32, bool)>,
+    told_info: HashSet<String>,
+    clip_paths: HashMap<String, (String, String)>,
+    now: HashSet<u32>,
+    updates: Vec<(FormId, AnimState)>,
+    new_info: Vec<(String, SequenceInfo)>,
+    gone_list: Vec<u32>,
+}
+
 /// At most this many "no longer told" and "told again" lines are logged [engineering
 /// choice: a cell change forgets every actor of the cell].
 const LOGGED_CHANGES: u32 = 40;
@@ -204,24 +216,17 @@ fn tell(
     player_idles: Option<Res<PlayerIdles>>,
     body: Option<Res<crate::player_body::PlayerBody>>,
     mut stats: ResMut<AnimStats>,
-    mut told: Local<HashSet<u32>>,
-    mut throw_began: Local<Option<(f32, bool)>>,
-    mut told_info: Local<HashSet<String>>,
-    mut clip_paths: Local<HashMap<String, (String, String)>>,
-    mut now: Local<HashSet<u32>>,
-    mut updates: Local<Vec<(FormId, AnimState)>>,
-    mut new_info: Local<Vec<(String, SequenceInfo)>>,
-    mut gone_list: Local<Vec<u32>>,
+    mut scratch: Local<AnimScratch>,
 ) {
     let Some(rt) = script.as_deref_mut().and_then(|s| s.rt.as_mut()) else { return };
     let dt = time.delta_secs().min(0.1);
     let clock = time.elapsed_secs();
     // Reuse per-system scratch storage. This system runs every frame and can visit many
     // actors; fresh HashSets and Vecs here otherwise allocate/free on every update.
-    now.clear();
-    updates.clear();
-    new_info.clear();
-    gone_list.clear();
+    scratch.scratch.now.clear();
+    scratch.updates.clear();
+    scratch.new_info.clear();
+    scratch.gone_list.clear();
     for (rig, vis, lo, hold, pose, idle, flinch, dying) in &actors {
         if rig.reference == FormId::PLAYER_REF.0 || !vis.get() || dying {
             continue;
@@ -256,18 +261,18 @@ fn tell(
         // The clip its body plays, without the `meshes\` its path starts with (kNVSE's
         // sequence paths are under meshes).
         let clip = lo.and_then(|l| l.set.clips.get(&l.blend.cur.mv)).map(|c| {
-            cached_clip_path(&c.path, &c.bound.clip, &mut clip_paths, &mut told_info, &mut new_info)
+            cached_clip_path(&c.path, &c.bound.clip, &mut scratch.clip_paths, &mut scratch.told_info, &mut scratch.new_info)
         });
         let st = AnimState { action, moving, group, iron_sights: false, throwing: false, mine: false, forced_hit, at: 0.0, clip };
-        if !told.contains(&rig.reference) && stats.actors.contains(&rig.reference) {
+        if !scratch.told.contains(&rig.reference) && stats.actors.contains(&rig.reference) {
             stats.again += 1;
             if stats.again <= LOGGED_CHANGES {
                 info!("anim state: {:08X} told again: group {}, way {}, action {}", rig.reference, st.group.unwrap_or("none"), st.moving.code(), st.action.map_or(-1, AnimAction::code));
             }
         }
         stats.note(rig.reference, &st);
-        updates.push((FormId(rig.reference), st));
-        now.insert(rig.reference);
+        scratch.updates.push((FormId(rig.reference), st));
+        scratch.now.insert(rig.reference);
     }
     // The player.
     let (trigger, aiming, walk) = (control.as_deref().is_some_and(|c| c.trigger), control.as_deref().is_some_and(|c| c.aiming), intent.as_deref().is_some_and(|i| i.walk));
@@ -288,37 +293,37 @@ fn tell(
     // IsPlayerActionActive 2 from a throw's first frame of 5 (`THROW_ACTION_SECONDS`).
     let winding = weapon_action == Some(AnimAction::ThrowWindUp);
     let was_winding = throw_began.is_some_and(|(_, w)| w);
-    let began = match *throw_began {
+    let began = match *scratch.throw_began {
         Some((t, _)) if !winding || was_winding => t,
         _ if winding => clock,
         _ => f32::NEG_INFINITY,
     };
-    *throw_began = Some((began, winding));
+    *scratch.throw_began = Some((began, winding));
     let throwing = clock - began < fnv_game::anim_state::THROW_ACTION_SECONDS;
     // IsPlayerActionActive 4 instead of 2 for a mine (a land mine or mine drop weapon).
     let mine = throwing && combat.as_deref().is_some_and(|c| c.player_weapon_is_mine());
     let first_person = control.as_deref().is_none_or(|c| !c.third_person_view());
     let player_clip = body.as_deref().and_then(|b| b.active_clip(first_person)).map(|(path, clip)| {
-        cached_clip_path(path, clip, &mut clip_paths, &mut told_info, &mut new_info)
+        cached_clip_path(path, clip, &mut scratch.clip_paths, &mut scratch.told_info, &mut scratch.new_info)
     });
     let st = AnimState { action: weapon_action.or(idle_action).or(landing), moving, group: Some(group(moving, !walk)), iron_sights, throwing, mine, forced_hit: false, at: 0.0, clip: player_clip };
     stats.note(FormId::PLAYER_REF.0, &st);
-    updates.push((FormId::PLAYER_REF, st));
-    gone_list.extend(told.difference(&now).copied());
-    for &gone in &gone_list {
+    scratch.updates.push((FormId::PLAYER_REF, st));
+    scratch.gone_list.extend(scratch.told.difference(&scratch.now).copied());
+    for &gone in &scratch.gone_list {
         stats.forgotten += 1;
         if stats.forgotten <= LOGGED_CHANGES {
             info!("anim state: {gone:08X} no longer told (not drawn, hidden or dying)");
         }
     }
-    let apply = |g: &mut fnv_game::game::Game<'_>| {
-        for (path, info) in new_info.drain(..) {
+    let mut apply = |g: &mut fnv_game::game::Game<'_>| {
+        for (path, info) in scratch.new_info.drain(..) {
             g.set_sequence_info(&path, info);
         }
-        for (actor, st) in updates.drain(..) {
+        for (actor, st) in scratch.updates.drain(..) {
             g.set_anim_state(actor, st);
         }
-        for gone in gone_list.drain(..) {
+        for gone in scratch.gone_list.drain(..) {
             g.forget_anim_state(FormId(gone));
         }
     };
@@ -329,8 +334,8 @@ fn tell(
     }
     // Swap the current visible set with the previous frame's set, retaining both
     // allocations for reuse on the next update.
-    std::mem::swap(&mut *told, &mut *now);
-    now.clear();
+    std::mem::swap(&mut scratch.told, &mut scratch.now);
+    scratch.scratch.now.clear();
 }
 
 #[cfg(test)]
