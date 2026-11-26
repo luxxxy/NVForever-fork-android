@@ -8,7 +8,7 @@ def explicitVersionCode = providers.environmentVariable('NVF_ANDROID_VERSION_COD
     .orElse(providers.gradleProperty('nvfAndroidVersionCode'))
     .orNull
 def deriveVersionCode = { String name ->
-    def m = (name =~ /^v?(\\d+)\\.(\\d+)\\.(\\d+)(?:-android-r(\\d+))?/)
+    def m = (name =~ /^v?(\d+)\.(\d+)\.(\d+)(?:-android-r(\d+))?/)
     if (!m.find()) throw new GradleException("Cannot derive monotonic versionCode from versionName '${name}'; set NVF_ANDROID_VERSION_CODE")
     int major = m.group(1) as int
     int minor = m.group(2) as int
@@ -91,7 +91,7 @@ def stageLegalAssets = tasks.register('stageLegalAssets', Exec) {
         def destination = legalAssets.get().file('NATIVE-SOURCE.txt').asFile
         if (nativeSource != null) {
             if (!(nativeSource ==~ /[0-9a-f]{40}/)) throw new GradleException('Invalid native source revision')
-            destination.text = "Native libraries corresponding source:\\nhttps://github.com/LootJunkieAzza/NVForever/tree/${nativeSource}\\n"
+            destination.text = "Native libraries corresponding source:\nhttps://github.com/LootJunkieAzza/NVForever/tree/${nativeSource}\n"
         } else if (destination.exists() && !destination.delete()) {
             throw new GradleException('Cannot remove stale native source identity')
         }
