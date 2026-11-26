@@ -225,6 +225,20 @@ mod tests {
     }
 
     #[test]
+    fn generation_changes_only_when_buffered_membership_changes() {
+        let mut b = CellBuffer::default();
+        assert_eq!(b.generation(), 0);
+        b.remember(7, None, grid(0, 0));
+        assert_eq!(b.generation(), 1);
+        // Refreshing the age of the same cells must not trigger a script resync.
+        b.remember(7, None, grid(0, 0));
+        assert_eq!(b.generation(), 1);
+        // Moving the grid adds buffered cells and advances the membership revision.
+        b.remember(7, None, grid(0, 1));
+        assert_eq!(b.generation(), 2);
+    }
+
+    #[test]
     fn cells_left_stay_until_newer_ones_push_them_out() {
         let mut b = CellBuffer::default();
         b.remember(7, None, grid(0, 0));
