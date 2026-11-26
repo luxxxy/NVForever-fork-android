@@ -1910,6 +1910,15 @@ fn run_with_args(line: Vec<String>) -> AppExit {
             Some(graphics::FrameTimes { every, cycle })
         }
     };
+    // Android performance investigation: collect frame, physics and available GPU-pass
+    // timings automatically. The normal launcher does not expose CLI test arguments, so
+    // relying on --log-frame-times would leave Android builds without useful measurements.
+    // Keep the interval modest and do not cycle graphics settings during ordinary play.
+    #[cfg(target_os = "android")]
+    let frame_times = frame_times.or_else(|| {
+        info!("Android performance diagnostics enabled (5-second frame-time reports)");
+        Some(graphics::FrameTimes { every: 5.0, cycle: Vec::new() })
+    });
     let mut app = App::new();
     // A command for an entity that is gone is logged, not fatal (stray_commands.rs).
     app.set_error_handler(stray_commands::handler);
