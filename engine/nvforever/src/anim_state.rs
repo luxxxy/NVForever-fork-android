@@ -168,6 +168,29 @@ fn sequence_info_of(clip: &nvf_assets::anim_play::Clip) -> SequenceInfo {
     }
 }
 
+/// Return the kNVSE-relative clip path while caching its normalized and case-folded
+/// forms. The actor animation system runs every frame; rebuilding these strings for every
+/// visible actor was avoidable allocator and hashing work.
+fn cached_clip_path(
+    path: &str,
+    clip: &nvf_assets::anim_play::Clip,
+    paths: &mut HashMap<String, (String, String)>,
+    told_info: &mut HashSet<String>,
+    new_info: &mut Vec<(String, SequenceInfo)>,
+) -> String {
+    if !paths.contains_key(path) {
+        let relative = strip_meshes(path);
+        let folded = relative.to_ascii_lowercase();
+        paths.insert(path.to_owned(), (relative, folded));
+    }
+    let (relative, folded) = paths.get(path).expect("clip path was just cached");
+    if !folded.is_empty() && !told_info.contains(folded) {
+        told_info.insert(folded.clone());
+        new_info.push((relative.clone(), sequence_info_of(clip)));
+    }
+    relative.clone()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn tell(
     time: Res<Time>,
@@ -184,6 +207,7 @@ fn tell(
     mut told: Local<HashSet<u32>>,
     mut throw_began: Local<Option<(f32, bool)>>,
     mut told_info: Local<HashSet<String>>,
+    mut clip_paths: Local<HashMap<String, (String, String)>>,
     mut now: Local<HashSet<u32>>,
     mut updates: Local<Vec<(FormId, AnimState)>>,
     mut new_info: Local<Vec<(String, SequenceInfo)>>,
@@ -232,12 +256,7 @@ fn tell(
         // The clip its body plays, without the `meshes\` its path starts with (kNVSE's
         // sequence paths are under meshes).
         let clip = lo.and_then(|l| l.set.clips.get(&l.blend.cur.mv)).map(|c| {
-            let rel = strip_meshes(&c.path);
-            let k = rel.to_ascii_lowercase();
-            if !k.is_empty() && told_info.insert(k) {
-                new_info.push((rel.clone(), sequence_info_of(&c.bound.clip)));
-            }
-            rel
+            cached_clip_path(&c.path, &c.bound.clip, &mut clip_paths, &mut told_info, &mut new_info)
         });
         let st = AnimState { action, moving, group, iron_sights: false, throwing: false, mine: false, forced_hit, at: 0.0, clip };
         if !told.contains(&rig.reference) && stats.actors.contains(&rig.reference) {
@@ -280,12 +299,7 @@ fn tell(
     let mine = throwing && combat.as_deref().is_some_and(|c| c.player_weapon_is_mine());
     let first_person = control.as_deref().is_none_or(|c| !c.third_person_view());
     let player_clip = body.as_deref().and_then(|b| b.active_clip(first_person)).map(|(path, clip)| {
-        let rel = strip_meshes(path);
-        let k = rel.to_ascii_lowercase();
-        if !k.is_empty() && told_info.insert(k) {
-            new_info.push((rel.clone(), sequence_info_of(clip)));
-        }
-        rel
+        cached_clip_path(path, clip, &mut clip_paths, &mut told_info, &mut new_info)
     });
     let st = AnimState { action: weapon_action.or(idle_action).or(landing), moving, group: Some(group(moving, !walk)), iron_sights, throwing, mine, forced_hit: false, at: 0.0, clip: player_clip };
     stats.note(FormId::PLAYER_REF.0, &st);
