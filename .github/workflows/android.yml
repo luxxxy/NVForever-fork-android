@@ -73,9 +73,9 @@ jobs:
       - name: Skinning WESL, SPIR-V and matrix layout controls
         shell: bash
         run: cargo test --manifest-path tools/android/skinning-check/Cargo.toml --target-dir target-android-cpu --locked --jobs 6
-      - name: Build the signed development APK
+      - name: Build the signed ARM64 APK with optimized Rust release profile
         shell: bash
-        run: python3 tools/android/build.py --jobs 2
+        run: python3 tools/android/build.py --profile release --jobs 2
       - name: Build the unsigned release package and verify Android privacy policy
         shell: bash
         run: |
