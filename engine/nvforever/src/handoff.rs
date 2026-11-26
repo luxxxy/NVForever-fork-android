@@ -303,6 +303,7 @@ pub fn leave(
     #[cfg(not(target_os = "android"))]
     mut exit: MessageWriter<AppExit>,
     location: Res<nvf_play::Location>,
+    #[cfg(not(target_os = "android"))]
     window: Query<(Entity, &Window), With<PrimaryWindow>>,
     #[cfg(not(target_os = "android"))]
     mut winit: ResMut<WinitSettings>,
