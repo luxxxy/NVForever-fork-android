@@ -180,13 +180,15 @@ pub fn remember(mut streamer: ResMut<Streamer>, world: Res<WorldData>, sim: Opti
         None => residents.and_then(|mut r| r.own_game().map(|g| g.world.placed)),
     };
     let s = &mut *streamer;
-    // The loading screen's placeholder key is no cell.
-    let drawn = || s.loaded.keys().copied().filter(|&(x, _)| x != i32::MIN);
+    // Borrow the loaded-cell map separately from the buffer so the iterator can be
+    // consumed directly by both passes. Collecting it into a temporary Vec every frame
+    // allocated even though the loaded set is already available and stable for the pass.
+    let loaded = &s.loaded;
+    let drawn = || loaded.keys().copied().filter(|&(x, _)| x != i32::MIN);
     if let (Some(refs), None) = (refs, s.interior) {
         s.buffer.note_doors(refs, world.world, drawn());
     }
-    let drawn: Vec<(i32, i32)> = drawn().collect();
-    s.buffer.remember(world.world, s.interior, drawn.into_iter());
+    s.buffer.remember(world.world, s.interior, drawn());
 }
 
 /// Tell the scripts' game the cells kept, when they change (GetBufferedCells,
