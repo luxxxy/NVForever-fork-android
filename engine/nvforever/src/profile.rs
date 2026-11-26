@@ -1078,7 +1078,16 @@ pub(crate) fn process_cpu_secs() -> Option<f64> {
     (ok != 0).then(|| secs(&t[2]) + secs(&t[3]))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
+pub(crate) fn process_cpu_secs() -> Option<f64> {
+    // Android's POSIX process CPU clock counts user + kernel time across engine threads.
+    let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: time is a live writable timespec; bionic supports CLOCK_PROCESS_CPUTIME_ID.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_PROCESS_CPUTIME_ID, &mut time) };
+    (result == 0).then(|| time.tv_sec as f64 + time.tv_nsec as f64 * 1e-9)
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
 pub(crate) fn process_cpu_secs() -> Option<f64> {
     None
 }
@@ -1097,7 +1106,15 @@ pub(crate) fn thread_cpu_secs() -> Option<f64> {
     (ok != 0).then(|| secs(&t[2]) + secs(&t[3]))
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "android")]
+pub(crate) fn thread_cpu_secs() -> Option<f64> {
+    let mut time = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: time is a live writable timespec; bionic supports CLOCK_THREAD_CPUTIME_ID.
+    let result = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut time) };
+    (result == 0).then(|| time.tv_sec as f64 + time.tv_nsec as f64 * 1e-9)
+}
+
+#[cfg(not(any(windows, target_os = "android")))]
 pub(crate) fn thread_cpu_secs() -> Option<f64> {
     None
 }
