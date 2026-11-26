@@ -184,13 +184,20 @@ fn tell(
     mut told: Local<HashSet<u32>>,
     mut throw_began: Local<Option<(f32, bool)>>,
     mut told_info: Local<HashSet<String>>,
+    mut now: Local<HashSet<u32>>,
+    mut updates: Local<Vec<(FormId, AnimState)>>,
+    mut new_info: Local<Vec<(String, SequenceInfo)>>,
+    mut gone_list: Local<Vec<u32>>,
 ) {
     let Some(rt) = script.as_deref_mut().and_then(|s| s.rt.as_mut()) else { return };
     let dt = time.delta_secs().min(0.1);
     let clock = time.elapsed_secs();
-    let mut now = HashSet::new();
-    let mut updates: Vec<(FormId, AnimState)> = Vec::new();
-    let mut new_info: Vec<(String, SequenceInfo)> = Vec::new();
+    // Reuse per-system scratch storage. This system runs every frame and can visit many
+    // actors; fresh HashSets and Vecs here otherwise allocate/free on every update.
+    now.clear();
+    updates.clear();
+    new_info.clear();
+    gone_list.clear();
     for (rig, vis, lo, hold, pose, idle, flinch, dying) in &actors {
         if rig.reference == FormId::PLAYER_REF.0 || !vis.get() || dying {
             continue;
@@ -283,7 +290,7 @@ fn tell(
     let st = AnimState { action: weapon_action.or(idle_action).or(landing), moving, group: Some(group(moving, !walk)), iron_sights, throwing, mine, forced_hit: false, at: 0.0, clip: player_clip };
     stats.note(FormId::PLAYER_REF.0, &st);
     updates.push((FormId::PLAYER_REF, st));
-    let gone_list: Vec<u32> = told.difference(&now).copied().collect();
+    gone_list.extend(told.difference(&now).copied());
     for &gone in &gone_list {
         stats.forgotten += 1;
         if stats.forgotten <= LOGGED_CHANGES {
@@ -291,13 +298,13 @@ fn tell(
         }
     }
     let apply = |g: &mut fnv_game::game::Game<'_>| {
-        for (path, info) in new_info {
+        for (path, info) in new_info.drain(..) {
             g.set_sequence_info(&path, info);
         }
-        for (actor, st) in updates {
+        for (actor, st) in updates.drain(..) {
             g.set_anim_state(actor, st);
         }
-        for gone in gone_list {
+        for gone in gone_list.drain(..) {
             g.forget_anim_state(FormId(gone));
         }
     };
@@ -306,7 +313,10 @@ fn tell(
     } else {
         apply(&mut rt.game);
     }
-    *told = now;
+    // Swap the current visible set with the previous frame's set, retaining both
+    // allocations for reuse on the next update.
+    std::mem::swap(&mut *told, &mut *now);
+    now.clear();
 }
 
 #[cfg(test)]
