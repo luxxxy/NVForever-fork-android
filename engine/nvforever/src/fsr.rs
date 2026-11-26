@@ -798,13 +798,10 @@ mod tests {
     #[test]
     fn mask_jitter_uniform_keeps_the_four_float_layout_without_heap_storage() {
         let actual = mask_jitter_bytes(Vec2::new(0.25, -0.5));
-        let expected = [
-            0.25f32.to_ne_bytes(),
-            (-0.5f32).to_ne_bytes(),
-            0.0f32.to_ne_bytes(),
-            0.0f32.to_ne_bytes(),
-        ].concat();
-        assert_eq!(actual.as_slice(), expected.as_slice());
+        let mut expected = [0u8; 16];
+        expected[0..4].copy_from_slice(&0.25f32.to_ne_bytes());
+        expected[4..8].copy_from_slice(&(-0.5f32).to_ne_bytes());
+        assert_eq!(actual, expected);
     }
 
     #[test]
