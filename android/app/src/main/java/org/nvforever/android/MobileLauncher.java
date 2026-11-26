@@ -345,6 +345,8 @@ final class MobileLauncher {
         add(about, label("Experimental build (" + activity.installedVersion() + ") · play with touch, a controller, or a keyboard and mouse.", 15, weak));
         if (state.isNull("folder")) add(about, tap("Set up a game folder", true, true, () -> showGameFolder("Import a complete game folder to enable Play.")));
         add(about, tap(updateChecking ? "Checking for updates…" : "Check for updates", false, !updateChecking && !updateDownloading, () -> checkForUpdates(true)));
+        add(about, tap("Export performance diagnostics", false, !activity.runningGame(), activity::exportPerformanceDiagnostics));
+        add(about, label("After a 60-second capture, close the game and export the ZIP here. It includes frame timings and the engine log.", 13, weak));
         if (updateInfo != null && updateInfo.optBoolean("available", false)) {
             String nextVersion = updateInfo.optString("version", "");
             LinearLayout updateCard = card("Update available: v" + nextVersion);
