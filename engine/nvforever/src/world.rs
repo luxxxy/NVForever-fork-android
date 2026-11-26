@@ -380,7 +380,7 @@ pub fn setup_root(mut commands: Commands) {
 /// [`stream`]'s actor resources and the frame's pace, as one parameter (a system takes at
 /// most 16).
 #[derive(Default)]
-struct StreamScratch {
+pub struct StreamScratch {
     want: HashSet<(i32, i32)>,
     far: Vec<(i32, i32)>,
     gone: Vec<(i32, i32)>,
