@@ -1230,6 +1230,72 @@ pub fn run_android() {
     }
 }
 
+/// Reapply the Android low-end policy after NVForever.ini has been read.
+/// The early values are needed while plugins are constructed; this pass makes the
+/// runtime state authoritative before the first Update/cell load.
+#[cfg(target_os = "android")]
+fn apply_android_performance_policy(world: &mut World) {
+    if let Some(mut graphics) = world.get_resource_mut::<graphics::Graphics>() {
+        graphics.ambient_occlusion = false;
+        graphics.fine_shadows = false;
+        graphics.bloom = false;
+        graphics.glow = false;
+        graphics.eye_adaptation = false;
+        graphics.neon_glow = false;
+        graphics.sharpen = false;
+        graphics.anisotropic = false;
+        graphics.screen_aa = graphics::ScreenAa::Off;
+        graphics.light_shafts = false;
+        graphics.water_reflections = false;
+        graphics.water_effects = false;
+        graphics.water_mirror = false;
+        graphics.shadow_filter = bevy::light::ShadowFilteringMethod::Hardware2x2;
+        graphics.mesh_terrain_blend = false;
+        graphics.terrain_height_blend = false;
+        graphics.terrain_anti_tiling = false;
+        graphics.terrain_parallax = false;
+        graphics.cloud_shadows = false;
+        graphics.terrain_shadows = false;
+        graphics.volumetric_clouds = false;
+        graphics.volumetric_light = false;
+        graphics.aerial_perspective = false;
+        graphics.night_sky_detail = false;
+        graphics.distant_lights = false;
+        graphics.distant_objects = crate::distant_objects::DistantObjects::Off;
+        graphics.full_detail = crate::full_detail::FullDetail::Off;
+
+        // Use the most aggressive supported FSR scale automatically. The upscaler
+        // resolves to native rendering on devices that do not support this Vulkan path.
+        let fsr_supported = world
+            .get_resource::<crate::fsr::FsrSupport>()
+            .is_some_and(|support| support.0);
+        graphics.upscaler = if fsr_supported {
+            crate::upscaler::UpscalerChoice::Fsr(
+                crate::upscaler::UpscaleQuality::UltraPerformance,
+            )
+        } else {
+            crate::upscaler::UpscalerChoice::Off
+        };
+        info!(
+            "Android performance policy: low effects, distant detail off, FSR {}; native fallback if unsupported",
+            if fsr_supported { "Ultra Performance (~33% render scale)" } else { "unavailable" }
+        );
+    }
+    if let Some(mut pace) = world.get_resource_mut::<crate::frame_pace::FramePace>() {
+        pace.cap = 30;
+    }
+    if let Some(mut sky) = world.get_resource_mut::<crate::sky::SkyState>() {
+        sky.shadows = false;
+    }
+    if let Some(mut lod) = world.get_resource_mut::<crate::lod::LodState>() {
+        lod.enabled = false;
+    }
+    if let Some(mut streamer) = world.get_resource_mut::<crate::world::Streamer>() {
+        streamer.fade_secs = 0.0;
+    }
+    info!("Android performance policy applied after stored settings: 30 FPS cap, sun shadows and distant LOD off, cell fades off");
+}
+
 fn run_with_args(line: Vec<String>) -> AppExit {
     let mut line = with_default_mode(line);
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf)) {
@@ -2649,6 +2715,11 @@ fn run_with_args(line: Vec<String>) -> AppExit {
     }
     if play.is_some() {
         settings::register(&mut app);
+        #[cfg(target_os = "android")]
+        app.add_systems(
+            PostStartup,
+            apply_android_performance_policy.after(nvf_play::settings::apply_stored),
+        );
         dlss_download::add(&mut app);
         quality_probe::register(&mut app);
         console_toggles::register(&mut app);
