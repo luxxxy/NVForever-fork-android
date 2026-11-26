@@ -796,6 +796,18 @@ mod tests {
     use crate::upscaler::prep::UpscaleCamera as FsrCamera;
 
     #[test]
+    fn mask_jitter_uniform_keeps_the_four_float_layout_without_heap_storage() {
+        let actual = mask_jitter_bytes(Vec2::new(0.25, -0.5));
+        let expected = [
+            0.25f32.to_ne_bytes(),
+            (-0.5f32).to_ne_bytes(),
+            0.0f32.to_ne_bytes(),
+            0.0f32.to_ne_bytes(),
+        ].concat();
+        assert_eq!(actual.as_slice(), expected.as_slice());
+    }
+
+    #[test]
     fn quality_modes_have_standard_ratios() {
         let output = UVec2::new(3840, 2160);
         assert_eq!(FsrQuality::NativeAa.render_size(output), output);
