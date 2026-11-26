@@ -12,5 +12,4 @@ crate-type = ["cdylib"]
 bevy = { workspace = true, features = ["android-native-activity"] }
 nvforever = { path = "../nvforever" }
 jni = "0.21"
-libc = "0.2"
 nvf-launcher = { path = "../../crates/nvf-launcher", default-features = false, features = ["mobile"] }
