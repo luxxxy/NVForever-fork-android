@@ -48,6 +48,9 @@ pub struct CellBuffer {
     exterior: HashMap<(u32, (i32, i32)), u64>,
     interior: HashMap<u32, u64>,
     frame: u64,
+    /// Changes only when the buffered cell membership changes; scripts need not rebuild
+    /// and sort the same cell lists on every frame.
+    generation: u64,
     /// Interiors behind the load doors of the exterior cells drawn so far (Mid-Low),
     /// and the exterior cells whose doors were looked at.
     behind_doors: HashSet<u32>,
@@ -59,6 +62,11 @@ pub struct CellBuffer {
 }
 
 impl CellBuffer {
+    /// Membership revision for consumers that only need to react when the set changes.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// The cells kept: exterior grid squares by worldspace, and interiors.
     pub fn cells(&self) -> (impl Iterator<Item = (u32, (i32, i32))> + '_, impl Iterator<Item = u32> + '_) {
         (self.exterior.keys().copied(), self.interior.keys().copied())
@@ -69,24 +77,28 @@ impl CellBuffer {
     pub fn remember(&mut self, world: u32, interior: Option<u32>, exterior: impl Iterator<Item = (i32, i32)>) {
         self.frame += 1;
         let carried = self.carried.get_mut().map(std::mem::take).unwrap_or_default();
+        let mut changed = false;
         for k in carried {
-            match k {
-                Key::Exterior(w, c) => self.exterior.insert((w, c), self.frame),
-                Key::Interior(i) => self.interior.insert(i, self.frame),
+            changed |= match k {
+                Key::Exterior(w, c) => self.exterior.insert((w, c), self.frame).is_none(),
+                Key::Interior(i) => self.interior.insert(i, self.frame).is_none(),
             };
         }
         match interior {
             Some(i) => {
-                self.interior.insert(i, self.frame);
+                changed |= self.interior.insert(i, self.frame).is_none();
             }
             None => {
                 for c in exterior {
-                    self.exterior.insert((world, c), self.frame);
+                    changed |= self.exterior.insert((world, c), self.frame).is_none();
                 }
             }
         }
-        keep_newest(&mut self.exterior, EXTERIOR_CELLS);
-        keep_newest(&mut self.interior, INTERIOR_CELLS);
+        changed |= keep_newest(&mut self.exterior, EXTERIOR_CELLS);
+        changed |= keep_newest(&mut self.interior, INTERIOR_CELLS);
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     /// An actor walked into the cell at `feet` in `space`: the cell counts as buffered
@@ -148,15 +160,16 @@ fn key(space: Space, feet: [f32; 3]) -> Key {
 }
 
 /// Drop the oldest entries beyond `n` (among cells left in the same frame, any).
-fn keep_newest<K: Copy + Eq + std::hash::Hash>(m: &mut HashMap<K, u64>, n: usize) {
+fn keep_newest<K: Copy + Eq + std::hash::Hash>(m: &mut HashMap<K, u64>, n: usize) -> bool {
     if m.len() <= n {
-        return;
+        return false;
     }
     let mut by_age: Vec<(u64, K)> = m.iter().map(|(k, f)| (*f, *k)).collect();
     by_age.sort_unstable_by_key(|e| std::cmp::Reverse(e.0));
     for (_, k) in &by_age[n..] {
         m.remove(k);
     }
+    true
 }
 
 /// Note the cells drawn this frame (after `world::stream`), and the interiors behind
@@ -178,15 +191,16 @@ pub fn remember(mut streamer: ResMut<Streamer>, world: Res<WorldData>, sim: Opti
 
 /// Tell the scripts' game the cells kept, when they change (GetBufferedCells,
 /// GetCellBuffered; `fnv_game::nvse_jip12`): the exterior squares as their cells.
-pub fn tell_game(streamer: Res<Streamer>, script: Option<ResMut<nvf_play::script::ScriptState>>, mut told: Local<Vec<(u32, (i32, i32))>>, mut told_in: Local<Vec<u32>>) {
+pub fn tell_game(streamer: Res<Streamer>, script: Option<ResMut<nvf_play::script::ScriptState>>, mut told_generation: Local<Option<u64>>) {
     let Some(rt) = script.and_then(|s| s.into_inner().rt.as_mut()) else { return };
+    let generation = streamer.buffer.generation();
+    if *told_generation == Some(generation) {
+        return;
+    }
     let (ext, int) = streamer.buffer.cells();
     let (mut ext, mut int): (Vec<_>, Vec<_>) = (ext.collect(), int.collect());
     ext.sort_unstable();
     int.sort_unstable();
-    if *told == ext && *told_in == int {
-        return;
-    }
     let g = &mut rt.game;
     let mut cells: std::collections::BTreeSet<fnv_sim::FormId> = int.iter().map(|&c| fnv_sim::FormId(c)).collect();
     for &(w, xy) in &ext {
@@ -195,7 +209,7 @@ pub fn tell_game(streamer: Res<Streamer>, script: Option<ResMut<nvf_play::script
         }
     }
     g.set_buffered_cells(cells);
-    (*told, *told_in) = (ext, int);
+    *told_generation = Some(generation);
 }
 
 #[cfg(test)]
