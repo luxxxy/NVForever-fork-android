@@ -2,6 +2,14 @@ name: android-test-apk
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - android/poco-m8-optimization
+    paths:
+      - 'android/**'
+      - 'engine/nvf-android/**'
+      - 'tools/android/**'
+      - '.github/workflows/android.yml'
   pull_request:
     paths:
       - 'android/**'
