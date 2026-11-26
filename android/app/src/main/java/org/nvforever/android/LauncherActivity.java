@@ -8,6 +8,11 @@ import android.os.Bundle;
 import android.provider.DocumentsContract;
 import java.io.File;
 import java.io.FileOutputStream;
+import java.io.FileInputStream;
+import java.io.OutputStream;
+import java.util.Comparator;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +26,8 @@ public final class LauncherActivity extends Activity {
     private File pendingInstallApk;
     private static final int PICK_GAME = 1;
     private static final int REQUEST_UNKNOWN_SOURCES = 2;
+    private static final int EXPORT_DIAGNOSTICS = 3;
+    private File pendingDiagnostics;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -47,6 +54,72 @@ public final class LauncherActivity extends Activity {
         super.onPause();
     }
     @Override protected void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); }
+    void exportPerformanceDiagnostics() {
+        if (busy || runningGame()) {
+            if (launcher != null) launcher.message("Close the game before exporting its performance capture.");
+            return;
+        }
+        File logs = new File(getFilesDir(), "home/logs");
+        File[] captures = logs.listFiles((dir, name) -> name.startsWith("frame-telemetry-") && name.endsWith(".jsonl"));
+        File[] runLogs = logs.listFiles((dir, name) -> name.startsWith("nvforever-") && name.endsWith(".log"));
+        File capture = newest(captures), runLog = newest(runLogs);
+        if (capture == null) {
+            if (launcher != null) launcher.message("No performance capture yet. Launch the game, let it run for at least 60 seconds, then return here.");
+            return;
+        }
+        try {
+            File zip = File.createTempFile("nvforever-performance-", ".zip", getCacheDir());
+            try (ZipOutputStream out = new ZipOutputStream(new FileOutputStream(zip))) {
+                addDiagnostic(out, capture, "frame-telemetry.jsonl");
+                if (runLog != null) addDiagnostic(out, runLog, "engine-run.log");
+            }
+            pendingDiagnostics = zip;
+            Intent save = new Intent(Intent.ACTION_CREATE_DOCUMENT)
+                .addCategory(Intent.CATEGORY_OPENABLE)
+                .setType("application/zip")
+                .putExtra(Intent.EXTRA_TITLE, "NVForever-performance-diagnostics.zip");
+            startActivityForResult(save, EXPORT_DIAGNOSTICS);
+        } catch (IOException | android.content.ActivityNotFoundException error) {
+            pendingDiagnostics = null;
+            if (launcher != null) launcher.message("Could not prepare diagnostics: " + error.getMessage());
+        }
+    }
+
+    private static File newest(File[] files) {
+        if (files == null) return null;
+        File result = null;
+        for (File file : files) if (file.isFile() && (result == null || file.lastModified() > result.lastModified())) result = file;
+        return result;
+    }
+
+    private static void addDiagnostic(ZipOutputStream out, File file, String name) throws IOException {
+        out.putNextEntry(new ZipEntry(name));
+        try (FileInputStream in = new FileInputStream(file)) {
+            byte[] buffer = new byte[32768];
+            int count;
+            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+        }
+        out.closeEntry();
+    }
+
+    private void saveDiagnostics(Uri destination) {
+        File zip = pendingDiagnostics;
+        pendingDiagnostics = null;
+        if (zip == null || destination == null) return;
+        try (InputStream in = new FileInputStream(zip);
+             OutputStream out = getContentResolver().openOutputStream(destination, "w")) {
+            if (out == null) throw new IOException("Destination could not be opened");
+            byte[] buffer = new byte[32768];
+            int count;
+            while ((count = in.read(buffer)) != -1) out.write(buffer, 0, count);
+            if (launcher != null) launcher.message("Performance diagnostics exported. Attach the ZIP here so I can analyze the capture.");
+        } catch (IOException error) {
+            if (launcher != null) launcher.message("Could not save diagnostics: " + error.getMessage());
+        } finally {
+            zip.delete();
+        }
+    }
+
     void pickGame() {
         if (busy || runningGame()) return;
         startActivityForResult(new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
@@ -104,6 +177,11 @@ public final class LauncherActivity extends Activity {
     @Override public void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
         if (launcher == null) return;
+        if (request == EXPORT_DIAGNOSTICS) {
+            if (result == RESULT_OK && data != null) saveDiagnostics(data.getData());
+            else { if (pendingDiagnostics != null) pendingDiagnostics.delete(); pendingDiagnostics = null; }
+            return;
+        }
         if (request == REQUEST_UNKNOWN_SOURCES) {
             File apk = pendingInstallApk;
             pendingInstallApk = null;
