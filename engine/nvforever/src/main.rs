@@ -1235,6 +1235,10 @@ pub fn run_android() {
 /// runtime state authoritative before the first Update/cell load.
 #[cfg(target_os = "android")]
 fn apply_android_performance_policy(world: &mut World) {
+    // Read device support before taking the mutable graphics resource borrow.
+    let fsr_supported = world
+        .get_resource::<crate::fsr::FsrSupport>()
+        .is_some_and(|support| support.0);
     if let Some(mut graphics) = world.get_resource_mut::<graphics::Graphics>() {
         graphics.ambient_occlusion = false;
         graphics.fine_shadows = false;
@@ -1266,9 +1270,6 @@ fn apply_android_performance_policy(world: &mut World) {
 
         // Use the most aggressive supported FSR scale automatically. The upscaler
         // resolves to native rendering on devices that do not support this Vulkan path.
-        let fsr_supported = world
-            .get_resource::<crate::fsr::FsrSupport>()
-            .is_some_and(|support| support.0);
         graphics.upscaler = if fsr_supported {
             crate::upscaler::UpscalerChoice::Fsr(
                 crate::upscaler::UpscaleQuality::UltraPerformance,
