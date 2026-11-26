@@ -21,7 +21,7 @@
 //! the port's place for the reconstruction itself ([`Upscaler::Api`]): it is given the same
 //! colour, motion and masks, the common corrected depth as a colour image, and the output.
 
-use std::{ops::{Deref, Range}, sync::{atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering}, Mutex}};
+use std::{borrow::Cow, ops::{Deref, Range}, sync::{atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering}, Mutex}};
 
 use bevy::camera::{CameraMainTextureUsages, Hdr, MainPassResolutionOverride, Viewport};
 use bevy::core_pipeline::{
@@ -532,6 +532,23 @@ fn sky_range(sort_keys: impl Iterator<Item = f32>) -> Range<usize> {
 /// without the light term.
 static DEBUG_VIEW: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("NVF_FSR_DEBUG_VIEW").is_ok_and(|v| v.trim() == "1"));
 
+/// Bridges wgpu-ffx's backend-neutral dispatch hooks to Bevy's GPU diagnostics.
+struct FsrGpuPassRecorder<'a>(Option<&'a bevy::render::diagnostic::DiagnosticsRecorder>);
+
+impl wgpu_ffx::FsrPassRecorder for FsrGpuPassRecorder<'_> {
+    fn begin(&mut self, pass: &mut wgpu::ComputePass<'_>, name: &'static str) {
+        if let Some(recorder) = self.0 {
+            recorder.begin_pass_span(pass, Cow::Borrowed(name));
+        }
+    }
+
+    fn end(&mut self, pass: &mut wgpu::ComputePass<'_>) {
+        if let Some(recorder) = self.0 {
+            recorder.end_pass_span(pass);
+        }
+    }
+}
+
 /// Reconstruction is before every effect expecting the full display-sized image. The common
 /// passes (the corrected depth, the fallback, the alpha copy, the expanded depth) are
 /// `upscaler::prep::Pipelines`', called here in the order FSR always ran them.
@@ -592,7 +609,10 @@ pub(crate) fn fsr_pass(
             };
             let upscale_span = diagnostics.time_span(encoder, "upscale");
             let dispatched = match &renderer.port {
-                Some(context) => context.dispatch(&mut view.lock().unwrap(), encoder, &info).map_err(|error| error.to_string()),
+                Some(context) => {
+                    let mut pass_recorder = FsrGpuPassRecorder(diagnostics);
+                    context.dispatch_with_recorder(&mut view.lock().unwrap(), encoder, &info, Some(&mut pass_recorder)).map_err(|error| error.to_string())
+                },
                 None => Err("the FSR context is missing".into()),
             };
             upscale_span.end(encoder);
