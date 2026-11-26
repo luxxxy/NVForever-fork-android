@@ -9,6 +9,7 @@ on:
       - 'android/**'
       - 'engine/nvf-android/**'
       - 'tools/android/**'
+      - 'docs/design/android-performance-capture.md'
       - '.github/workflows/android.yml'
   pull_request:
     paths:
