@@ -178,6 +178,13 @@ pub(crate) fn jitter_offset(frame: u32, phases: i32) -> Vec2 {
     Vec2::from_array(wgpu_ffx::get_jitter_offset((frame % i32::MAX as u32) as i32, phases))
 }
 
+fn view_jitter(settings: UpscaleSettings, frame: u32, phases: i32) -> Vec2 {
+    match settings {
+        UpscaleSettings::Fsr(fsr) if fsr.spatial => Vec2::ZERO,
+        _ => -jitter_offset(frame, phases),
+    }
+}
+
 /// The upscaler a camera's components ask for: FSR where the device can run it, else DLSS's
 /// component. The graphics settings put `DlssUpscaling` on the camera only while DLSS is the
 /// effective choice (`graphics::apply`, `upscaler::UpscalerStatus`), and never both; FSR is
@@ -391,10 +398,7 @@ pub(crate) fn prepare(
             usages.0 |= crate::dlss::main_texture_usages();
         }
         // Bevy applies its projection jitter with the opposite displacement sign.
-        jitter.offset = match camera.settings {
-            UpscaleSettings::Fsr(fsr) if fsr.spatial => Vec2::ZERO,
-            _ => -jitter_offset(camera.frame, policy.jitter_phases),
-        };
+        jitter.offset = view_jitter(camera.settings, camera.frame, policy.jitter_phases);
         bias.0 = policy.mip_bias;
         // The ambient occlusion: at the render size before the upscaler (ssao.rs
         // `ao_before_fsr`), or with `NVF_AO_BEFORE_FSR=0` after tonemapping, from the depth
@@ -713,6 +717,15 @@ mod tests {
         let limits = wgpu::Limits { max_storage_textures_per_shader_stage: 8, ..default() };
         let none = policy(UpscaleSettings::Dlss(Quality), output, &limits, |_| None).map(|p| p.render_size);
         assert_eq!(drawn(dlss, none, output, true), DrawnUpscale::Native { choice: dlss, output });
+    }
+
+    #[test]
+    fn spatial_mobile_upscale_does_not_jitter_the_scene() {
+        let spatial = UpscaleSettings::Fsr(FsrUpscaling { quality: UpscaleQuality::UltraPerformance, sharpness: 0.0, spatial: true });
+        let temporal = UpscaleSettings::Fsr(FsrUpscaling { quality: UpscaleQuality::UltraPerformance, sharpness: 0.0, spatial: false });
+        assert_eq!(view_jitter(spatial, 7, 8), Vec2::ZERO);
+        assert_eq!(view_jitter(temporal, 7, 8), -jitter_offset(7, 8));
+        assert_ne!(view_jitter(temporal, 7, 8), Vec2::ZERO);
     }
 
     #[test]
