@@ -317,14 +317,37 @@ fn leaf_orders_on() -> bool {
 /// The index list of leaf cards (each `(first vertex, place)`, four vertices from the
 /// first) sorted for heading `k`: the cards furthest towards that heading from the
 /// cards' centre first.
+/// All eight leaf-card index orders. Project each card onto each heading once, rather
+/// than repeating vector subtraction and dot products inside eight comparison sorts.
+fn leaf_indices_all(cards: &[(u32, Vec3)]) -> [Vec<u32>; LEAF_ORDERS] {
+    let centre = cards.iter().fold(Vec3::ZERO, |sum, card| sum + card.1) / cards.len().max(1) as f32;
+    let mut projected: [Vec<(u32, f32)>; LEAF_ORDERS] =
+        std::array::from_fn(|_| Vec::with_capacity(cards.len()));
+    let directions: [Vec3; LEAF_ORDERS] = std::array::from_fn(|k| {
+        let a = std::f32::consts::TAU * k as f32 / LEAF_ORDERS as f32;
+        Vec3::new(a.cos(), a.sin(), 0.0)
+    });
+    for &(first, place) in cards {
+        let relative = place - centre;
+        for (heading, direction) in directions.iter().enumerate() {
+            projected[heading].push((first, relative.dot(*direction)));
+        }
+    }
+    for order in &mut projected {
+        // Stable sorting preserves the authored order when cards have equal depth.
+        order.sort_by(|a, b| b.1.total_cmp(&a.1));
+    }
+    std::array::from_fn(|k| {
+        projected[k]
+            .iter()
+            .flat_map(|&(first, _)| [first, first + 1, first + 2, first, first + 2, first + 3])
+            .collect()
+    })
+}
+
+/// One heading's leaf-card index order (test aid).
 fn leaf_indices(cards: &[(u32, Vec3)], k: usize) -> Vec<u32> {
-    let n = cards.len().max(1) as f32;
-    let centre = cards.iter().fold(Vec3::ZERO, |a, c| a + c.1) / n;
-    let a = std::f32::consts::TAU * k as f32 / LEAF_ORDERS as f32;
-    let dir = Vec3::new(a.cos(), a.sin(), 0.0);
-    let mut sorted: Vec<&(u32, Vec3)> = cards.iter().collect();
-    sorted.sort_by(|x, y| (y.1 - centre).dot(dir).total_cmp(&(x.1 - centre).dot(dir)));
-    sorted.iter().flat_map(|&&(f, _)| [f, f + 1, f + 2, f, f + 2, f + 3]).collect()
+    leaf_indices_all(cards)[k].clone()
 }
 
 /// One TREE base made drawable: parts in tree space (size 1) and the scale to game units.
@@ -493,9 +516,10 @@ fn build(
         if rec.leaf_dimming.is_some() {
             mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colour);
         }
+        let ordered_indices = leaf_indices_all(&cards);
         let orders: [Handle<Mesh>; LEAF_ORDERS] = std::array::from_fn(|k| {
             let mut m = mesh.clone();
-            m.insert_indices(bevy::mesh::Indices::U32(leaf_indices(&cards, k)));
+            m.insert_indices(bevy::mesh::Indices::U32(ordered_indices[k].clone()));
             models.meshes.add(m)
         });
         let mat = leaf_materials.add(LeafMaterial {
