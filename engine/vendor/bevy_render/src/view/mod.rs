@@ -1445,7 +1445,7 @@ pub fn prepare_view_targets(
     )>,
     view_target_attachments: Res<ViewTargetAttachments>,
     mut main_texture_atomics: Local<HashMap<MainTextureKey, Weak<AtomicUsize>>>,
-    mut textures: Local<HashMap<MainTextureKey, (Texture, Texture, Option<Texture>, Arc<AtomicUsize>)>>,
+    mut textures: Local<HashMap<MainTextureKey, (CachedTexture, CachedTexture, Option<CachedTexture>, Arc<AtomicUsize>)>>,
 ) {
     main_texture_atomics.retain(|_, weak| weak.strong_count() > 0);
 
