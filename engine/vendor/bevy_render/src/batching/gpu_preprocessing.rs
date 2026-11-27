@@ -3199,7 +3199,7 @@ pub fn clear_scene_unpacking_buffers(mut scene_unpacking_buffers: ResMut<SceneUn
 
 /// CPU-side metadata needed to drive the uniform allocation and bin unpacking
 /// compute shaders for a single batch set.
-struct BatchSetSceneUnpackingMetadata {
+pub struct BatchSetSceneUnpackingMetadata {
     /// The index of the first [`PreprocessWorkItem`] that the compute shader
     /// dispatch is to write to.
     base_output_work_item_index: u32,
