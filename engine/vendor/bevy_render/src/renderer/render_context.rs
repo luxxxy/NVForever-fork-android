@@ -304,6 +304,8 @@ struct RenderContextStateInner {
     // NVForever encoder spans: a GPU time span is open on `command_encoder`.
     span_open: bool,
     commands: Vec<PendingCommandBuffer>,
+    // Reusable destination for early-finish conversion; swapping retains both allocations.
+    commands_scratch: Vec<PendingCommandBuffer>,
     render_device: Option<RenderDevice>,
 }
 
@@ -375,17 +377,12 @@ impl SystemBuffer for RenderContextState {
         // can be finished now, on the compute threads.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // Transform in place instead of collecting the drained iterator into a
-            // fresh Vec. This queue runs once per render system; retaining its allocation
-            // avoids repeatedly allocating and freeing a command list during every frame.
-            let command_count = inner.commands.len();
-            inner.commands.reverse();
-            for _ in 0..command_count {
-                let command = inner
-                    .commands
-                    .pop()
-                    .expect("command count was captured before the in-place transform");
-                inner.commands.push(match command {
+            // Convert in submission order into a reusable scratch Vec. Swapping the
+            // buffers retains both allocations across render systems and avoids moving
+            // a just-converted command back through the source queue.
+            inner.commands_scratch.clear();
+            for command in inner.commands.drain(..) {
+                inner.commands_scratch.push(match command {
                     PendingCommandBuffer::Encoder {
                         encoder,
                         #[cfg(feature = "trace")]
@@ -398,7 +395,7 @@ impl SystemBuffer for RenderContextState {
                     other => other,
                 });
             }
-            inner.commands.reverse();
+            core::mem::swap(&mut inner.commands, &mut inner.commands_scratch);
         }
 
         if !inner.commands.is_empty() {
