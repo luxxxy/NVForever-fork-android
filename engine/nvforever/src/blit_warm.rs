@@ -31,10 +31,10 @@ use bevy::render::{RenderApp, RenderStartup};
 const FORMATS: [TextureFormat; 6] = [
     TextureFormat::Rgba8UnormSrgb,
     TextureFormat::Bgra8UnormSrgb,
-    TextureFormat::Rgba8Unorm,
-    TextureFormat::Bgra8Unorm,
     TextureFormat::Rgba16Float,
     TextureFormat::R32Float,
+    TextureFormat::Rgba8Unorm,
+    TextureFormat::Bgra8Unorm,
 ];
 
 /// Every upscaling key warmed: each format, written over (the first camera on a target)
@@ -42,9 +42,9 @@ const FORMATS: [TextureFormat; 6] = [
 pub fn keys() -> Vec<BlitPipelineKey> {
     let mut keys = Vec::with_capacity(FORMATS.len() * 2);
 
-    // The main window uses one of these two sRGB formats. Queue both unblended
-    // variants first so the window's actual key is near the front of the compile
-    // queue; off-screen and blended camera variants can follow.
+    // The main window uses one of the first two formats. The reflection and ripple
+    // targets use the next two. Keep all four first-view formats ahead of secondary
+    // unorm targets and blended variants.
     for &target_format in &FORMATS[..2] {
         keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: None, samples: 1, source_space: None });
     }
@@ -79,15 +79,26 @@ impl Plugin for BlitWarmPlugin {
 /// Specializes every key after the blit pipeline and specialized-pipeline cache have
 /// been initialized for this render device.
 fn warm(
-    cache: Res<PipelineCache>,
+    mut cache: ResMut<PipelineCache>,
     blit: Res<BlitPipeline>,
     mut pipelines: ResMut<SpecializedRenderPipelines<BlitPipeline>>,
 ) {
     let keys = keys();
-    for key in &keys {
+
+    // These are the window, reflection and ripple formats used by the first views.
+    // Compile them now, before Bevy's first-view preparation can block on them. The
+    // remaining image formats and blended variants are queued for background compilation.
+    for key in keys.iter().take(4) {
+        let id = pipelines.specialize(&cache, &blit, *key);
+        cache.block_on_render_pipeline(id);
+    }
+    for key in keys.iter().skip(4) {
         pipelines.specialize(&cache, &blit, *key);
     }
-    info!("blit warm: {} upscaling pipelines queued during render startup", keys.len());
+    info!(
+        "blit warm: 4 first-view pipelines ready; {} secondary variants queued during render startup",
+        keys.len() - 4
+    );
 }
 
 #[cfg(test)]
