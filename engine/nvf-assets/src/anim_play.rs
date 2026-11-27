@@ -624,13 +624,22 @@ impl Playing {
     /// until the track switches. Returns how many nodes switched (a node's first write
     /// not counted).
     pub fn show(&mut self, visibility: &mut Query<&mut Visibility>) -> usize {
-        let now: Vec<(usize, bool)> = self.visible_now().filter(|&(i, on)| self.shows[i].last != Some(on)).collect();
+        let t = self.sequence_time();
+        let clock = self.time - self.start;
         let mut switched = 0;
-        for &(i, on) in &now {
-            let s = &mut self.shows[i];
-            switched += usize::from(s.last.is_some());
-            s.last = Some(on);
-            if let Ok(mut v) = visibility.get_mut(s.node) {
+        // Process changes in place: collecting a temporary Vec here allocated once per
+        // playing clip per frame, even when none of its visibility tracks changed.
+        for i in 0..self.shows.len() {
+            let (node, on) = {
+                let shown = &self.shows[i];
+                let at = shown.track.at(shown.cycle.map_or(t, |cycle| cycle.time(clock)));
+                (shown.node, at)
+            };
+            let Some(on) = on else { continue };
+            if self.shows[i].last == Some(on) { continue; }
+            switched += usize::from(self.shows[i].last.is_some());
+            self.shows[i].last = Some(on);
+            if let Ok(mut v) = visibility.get_mut(node) {
                 *v = if on { Visibility::Inherited } else { Visibility::Hidden };
             }
         }
