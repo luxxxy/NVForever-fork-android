@@ -298,6 +298,49 @@ fn despawn_all(commands: &mut Commands, entities: impl IntoIterator<Item = Entit
     }
 }
 
+/// Reusable cell coverage for the distant LOD. Cell membership changes only when the
+/// loaded/ring set or a fade's settled state changes, not on every rendered frame.
+#[derive(Default)]
+struct DrawnCellCache {
+    origin: Option<Grid>,
+    full_cells: Vec<(Grid, bool)>,
+    full_scratch: Vec<(Grid, bool)>,
+    block_cells: Vec<(Grid, bool)>,
+    block_scratch: Vec<(Grid, bool)>,
+    full: HashSet<Grid>,
+    masks: HashMap<Grid, (u16, u16)>,
+}
+
+impl DrawnCellCache {
+    fn refresh(&mut self, drawn: &crate::full_detail::DrawnCells, origin: Grid) {
+        let origin_changed = self.origin != Some(origin);
+
+        drawn.cells_into(false, &mut self.full_scratch);
+        self.full_scratch.sort_unstable();
+        if origin_changed || self.full_scratch != self.full_cells {
+            self.full_cells.clone_from(&self.full_scratch);
+            self.full.clear();
+            self.full.extend(self.full_cells.iter().filter(|(_, full)| *full).map(|(cell, _)| *cell));
+        }
+
+        drawn.cells_into(true, &mut self.block_scratch);
+        self.block_scratch.sort_unstable();
+        if origin_changed || self.block_scratch != self.block_cells {
+            self.block_cells.clone_from(&self.block_scratch);
+            self.masks.clear();
+            for &(cell, full) in &self.block_cells {
+                let (square, bit) = chunk_bit(cell, origin);
+                let mask = self.masks.entry(square).or_default();
+                mask.1 |= bit;
+                if full {
+                    mask.0 |= bit;
+                }
+            }
+        }
+        self.origin = Some(origin);
+    }
+}
+
 #[derive(Resource)]
 pub struct LodState {
     pub settings: LodSettings,
@@ -930,6 +973,7 @@ pub fn update_lod(
     mut models: ModelCtx,
     pace: Res<crate::stream_pace::StreamPace>,
     mut contents: ResMut<BlockContents>,
+    mut drawn_cache: Local<DrawnCellCache>,
 ) {
     if !lod.enabled {
         return;
@@ -979,10 +1023,11 @@ pub fn update_lod(
             }
         }
     }
-    // Which cells are drawn (loaded, or the full-detail ring's), and which are fully
-    // drawn, per level-4 square.
-    let full: HashSet<Grid> = drawn.full();
-    let masks = block_masks(&drawn.cells(true), o);
+    // Cache the loaded/ring coverage. Its masks and full-cell set stay unchanged for
+    // ordinary camera frames; only a cell/fade transition rebuilds them.
+    drawn_cache.refresh(&drawn, o);
+    let full = &drawn_cache.full;
+    let masks = &drawn_cache.masks;
     let mut changed = false;
     let started = std::time::Instant::now();
     let mut rebuilt = 0usize;
@@ -1012,7 +1057,7 @@ pub fn update_lod(
                     continue;
                 };
                 // A model that did not load draws nothing, as before.
-                let trim = (!key.full.is_empty()).then_some(&full);
+                let trim = (!key.full.is_empty()).then_some(full);
                 let surface = model.as_deref().map_or(Surface::Empty, |m| chunk_surface(m, &models.materials, &models.images, trim));
                 if !admit(&surface) {
                     lod.surfaces.texture_waits += 1;
@@ -1027,7 +1072,7 @@ pub fn update_lod(
         if let Some(old) = lod.terrain.remove(&chunk) {
             despawn_all(&mut commands, old.entities);
         }
-        let spawned = spawn_terrain(&mut commands, root, &mut lod, &mut models, chunk, key, &full);
+        let spawned = spawn_terrain(&mut commands, root, &mut lod, &mut models, chunk, key, full);
         lod.terrain.insert(chunk, spawned);
         lod.terrain_rebuilds += 1;
         changed = true;

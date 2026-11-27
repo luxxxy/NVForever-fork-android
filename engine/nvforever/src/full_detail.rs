@@ -1093,11 +1093,23 @@ impl DrawnCells<'_> {
         self.ring.as_deref().map(|r| &r.cells)
     }
 
+    /// Fill a caller-owned buffer with every drawn cell and whether it is fully drawn.
+    /// Reusing the buffer avoids allocating a new vector on every distant-LOD update.
+    pub fn cells_into(&self, blocks: bool, out: &mut Vec<(Grid, bool)>) {
+        out.clear();
+        out.extend(self.streamer.loaded.keys().map(|c| (*c, !self.streamer.fades.contains_key(c))));
+        if let Some(ring) = self.ring() {
+            out.extend(ring.iter().filter(|(_, s)| !(blocks && s.keep_segment())).map(|(c, s)| (*c, s.full())));
+        }
+    }
+
     /// Every drawn cell with whether it is fully drawn: the loaded ones (those not
     /// fading), then the ring's; for `blocks` (object LOD segments) without the ring cells
     /// that keep their segment.
     pub fn cells(&self, blocks: bool) -> Vec<(Grid, bool)> {
-        drawn_cells(self.streamer.loaded.keys().map(|c| (*c, !self.streamer.fades.contains_key(c))), self.ring(), blocks)
+        let mut out = Vec::new();
+        self.cells_into(blocks, &mut out);
+        out
     }
 
     /// The cells fully drawn: the LOD terrain is cut out there.
