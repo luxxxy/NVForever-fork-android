@@ -573,6 +573,9 @@ pub(crate) fn fsr_pass(
     let UpscaleSettings::Fsr(settings) = prepared.camera.settings else { return };
     if settings.spatial {
         common.fallback(device.wgpu_device(), ctx.command_encoder(), prepared, target);
+        if let Some(depth) = prepass.and_then(|prepass| prepass.depth.as_ref()) {
+            common.expand_depth(device.wgpu_device(), ctx.command_encoder(), prepared, &depth.texture.texture);
+        }
         return;
     }
     let (Some(auxiliary), Some(fsr)) = (&renderer.auxiliary, fsr) else { return };
