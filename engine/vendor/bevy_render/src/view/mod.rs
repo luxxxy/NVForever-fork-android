@@ -1445,10 +1445,13 @@ pub fn prepare_view_targets(
     )>,
     view_target_attachments: Res<ViewTargetAttachments>,
     mut main_texture_atomics: Local<HashMap<MainTextureKey, Weak<AtomicUsize>>>,
+    mut textures: Local<HashMap<MainTextureKey, (Texture, Texture, Option<Texture>, Arc<AtomicUsize>)>>,
 ) {
     main_texture_atomics.retain(|_, weak| weak.strong_count() > 0);
 
-    let mut textures = <HashMap<_, _>>::default();
+    // Reuse the per-frame camera-target grouping table instead of allocating a new
+    // HashMap every time view targets are prepared.
+    textures.clear();
     for (entity, camera, view, texture_usage, msaa, resolved_space) in cameras.iter() {
         let Some(target_size) = camera.physical_target_size else {
             // If we don't have a target size, we can't create the main texture and have to bail
