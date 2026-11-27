@@ -3316,6 +3316,19 @@ mod tests {
     impl_atomic_pod!(TestData, TestDataBlob);
 
     #[test]
+    fn coalesce_batch_ranges_reuses_capacity_and_merges_adjacent_ranges() {
+        let mut merged = Vec::new();
+
+        coalesce_batch_ranges(&[0..2, 2..4, 7..8], &mut merged);
+        assert_eq!(merged, vec![0..4, 7..8]);
+
+        let retained_capacity = merged.capacity();
+        coalesce_batch_ranges(&[10..11, 11..15], &mut merged);
+        assert_eq!(merged, vec![10..15]);
+        assert_eq!(merged.capacity(), retained_capacity);
+    }
+
+    #[test]
     fn instance_buffer_correct_behavior() {
         let mut instance_buffer = InstanceInputUniformBuffer::new();
 
