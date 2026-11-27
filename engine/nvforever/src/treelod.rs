@@ -378,7 +378,7 @@ pub fn update_distant_trees(
         let origin = Vec3::new(g.0 as f32 * CELL_SIZE, g.1 as f32 * CELL_SIZE, 0.0);
         let step = fade::step(drawn.tree_level(g));
         let mut d = DrawnCell { entities: Vec::new(), trees: 0, step };
-        for b in bases {
+        for b in bases.iter().copied() {
             let board = trees.bases.entry(b).or_insert_with(|| board(&world, b, &mut models, &mut materials)).clone();
             let Some((mat, size)) = board else { continue };
             let list = by_base.get(&b).expect("base key came from this cell");
