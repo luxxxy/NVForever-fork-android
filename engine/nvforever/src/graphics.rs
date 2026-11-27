@@ -1228,6 +1228,17 @@ fn apply(
 mod tests {
     use super::*;
 
+    #[test]
+    fn android_preset_starts_with_performance_spatial_upscaling() {
+        let graphics = Graphics::preset(Preset::Vanilla);
+        if cfg!(target_os = "android") {
+            assert_eq!(graphics.upscaler, UpscalerChoice::Fsr(UpscaleQuality::Performance));
+            assert!(graphics.mobile_fast_upscale);
+        } else {
+            assert_eq!(graphics.upscaler, UpscalerChoice::Off);
+        }
+    }
+
     fn aa_app(screen_aa: ScreenAa, supported: bool) -> (App, Entity) {
         let mut app = App::new();
         let mut graphics = Graphics::preset(Preset::Vanilla);
