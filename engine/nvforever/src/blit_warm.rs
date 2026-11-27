@@ -13,14 +13,14 @@
 //! [observed: tools/stress tour Goodsprings–Primm, 2026-10-27; docs/design/
 //! streaming-hitches.md §3 had the frame as "not looked into yet"].
 //!
-//! Every key the game's cameras can ask for is specialized once on the render app's first
-//! frames ([`KEYS`]), without waiting: the compiles finish under the loading screen and
-//! a later camera finds its pipeline ready. The formats are those of the window (Bevy
-//! names a window's Bgra8UnormSrgb Rgba8UnormSrgb) and of the image targets
-//! (Bgra8UnormSrgb for the Pip-Boy, terminal, scope and table views, Rgba16Float for the
-//! reflection, R32Float for the ripples); a camera after the first on a target blends
-//! (alpha blending); no camera sets a compositing space [engineering choice: a dozen small
-//! full-screen pipelines].
+//! Every key the game's cameras can ask for is specialized during render startup
+//! ([`keys`]). The first-view formats are compiled before the first rendered frame; the
+//! remaining image formats and blended variants are queued for background compilation.
+//! The formats are those of the window (Bevy names a window's Bgra8UnormSrgb and
+//! Rgba8UnormSrgb) and of the image targets (Bgra8UnormSrgb for the Pip-Boy, terminal,
+//! scope and table views, Rgba16Float for the reflection, R32Float for the ripples); a
+//! camera after the first on a target blends (alpha blending); no camera sets a
+//! compositing space [engineering choice: a dozen small full-screen pipelines].
 
 use bevy::core_pipeline::blit::{BlitPipeline, BlitPipelineKey};
 use bevy::prelude::*;
@@ -63,7 +63,7 @@ impl Plugin for BlitWarmPlugin {
     fn build(&self, app: &mut App) {
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
             // The first view blocks in Bevy's prepare_view_upscaling_pipelines until
-            // its blit pipeline is ready. Queue the window variants during RenderStartup,
+            // its blit pipeline is ready. Compile first-view variants during RenderStartup,
             // after Bevy has created both resources, rather than racing that blocking
             // system in RenderSystems::Prepare. RenderStartup runs again on device recovery.
             render.add_systems(
@@ -110,6 +110,8 @@ mod tests {
         let k = keys();
         assert_eq!(k[0].target_format, TextureFormat::Rgba8UnormSrgb);
         assert_eq!(k[1].target_format, TextureFormat::Bgra8UnormSrgb);
+        assert_eq!(k[2].target_format, TextureFormat::Rgba16Float);
+        assert_eq!(k[3].target_format, TextureFormat::R32Float);
         assert!(k[0].blend_state.is_none());
         assert!(k[1].blend_state.is_none());
     }
