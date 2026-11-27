@@ -1079,7 +1079,7 @@ pub fn drive(
         let mut c = ActorAnimCost::default();
         let (mut scratch, mut out) = (Vec::new(), Vec::new());
         for (item, written, pose_visible) in chunk.iter_mut() {
-            drive_one(item, *written, *pose_visible, dt, now, &mut scratch, &mut out, &mut c);
+            drive_one(item, *written, *pose_visible, (dt, now), &mut scratch, &mut out, &mut c);
         }
         (c, out)
     };
@@ -1117,7 +1117,8 @@ type ActorAnimItem<'w, 's> = bevy::ecs::query::QueryItem<'w, 's, ActorAnimParts>
 /// One actor of [`drive`]: its clips chosen and blended and its bones sampled into
 /// `out` (written by the caller); `written` is [`BlendPlayer::written_since`] for a dead
 /// one. Only the actor's own components are touched.
-fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, pose_visible: bool, dt: f32, now: f32, scratch: &mut Vec<(usize, Transform)>, out: &mut Vec<(Entity, Transform)>, cost: &mut ActorAnimCost) {
+fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, pose_visible: bool, timing: (f32, f32), scratch: &mut Vec<(usize, Transform)>, out: &mut Vec<(Entity, Transform)>, cost: &mut ActorAnimCost) {
+    let (dt, now) = timing;
     let (lo, player, weapon, dying, flinch, seated, idle, pose, creature, name, talk, _) = item;
     let (flinch, seated, idle, name, talk) = (*flinch, *seated, *idle, *name, *talk);
     // Set below for a standing actor's idle only.
