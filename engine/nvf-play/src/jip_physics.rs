@@ -33,7 +33,13 @@ impl Plugin for JipPhysicsPlugin {
     }
 }
 
-fn apply(script: Option<ResMut<ScriptState>>, phys: Option<ResMut<PhysState>>, mut knocks: MessageWriter<Knockback>, mut gravity: Local<Option<[f32; 3]>>) {
+fn apply(
+    script: Option<ResMut<ScriptState>>,
+    phys: Option<ResMut<PhysState>>,
+    mut knocks: MessageWriter<Knockback>,
+    mut gravity: Local<Option<[f32; 3]>>,
+    mut watched: Local<Vec<FormId>>,
+) {
     let (Some(mut script), Some(mut phys)) = (script, phys) else { return };
     let Some(rt) = script.rt.as_mut() else { return };
     let g = &mut rt.game;
@@ -69,12 +75,16 @@ fn apply(script: Option<ResMut<ScriptState>>, phys: Option<ResMut<PhysState>>, m
             }
         }
     }
-    let watched: Vec<FormId> = g.phys_watched().collect();
+    // Keep the watched-reference list's allocation across frames. The script runtime
+    // can expose the same set repeatedly, and collecting it into a fresh Vec each frame
+    // needlessly allocates on this per-frame bridge.
+    watched.clear();
+    watched.extend(g.phys_watched());
     if watched.is_empty() {
         return;
     }
     p.world.update_queries();
-    for r in watched {
+    for r in watched.iter().copied() {
         let view = view_of(p, r);
         g.set_phys_view(r, view);
     }
