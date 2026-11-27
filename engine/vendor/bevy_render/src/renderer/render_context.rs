@@ -375,10 +375,17 @@ impl SystemBuffer for RenderContextState {
         // can be finished now, on the compute threads.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            inner.commands = inner
-                .commands
-                .drain(..)
-                .map(|command| match command {
+            // Transform in place instead of collecting the drained iterator into a
+            // fresh Vec. This queue runs once per render system; retaining its allocation
+            // avoids repeatedly allocating and freeing a command list during every frame.
+            let command_count = inner.commands.len();
+            inner.commands.reverse();
+            for _ in 0..command_count {
+                let command = inner
+                    .commands
+                    .pop()
+                    .expect("command count was captured before the in-place transform");
+                inner.commands.push(match command {
                     PendingCommandBuffer::Encoder {
                         encoder,
                         #[cfg(feature = "trace")]
@@ -389,8 +396,9 @@ impl SystemBuffer for RenderContextState {
                         name,
                     )),
                     other => other,
-                })
-                .collect();
+                });
+            }
+            inner.commands.reverse();
         }
 
         if !inner.commands.is_empty() {
