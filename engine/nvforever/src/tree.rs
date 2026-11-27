@@ -678,6 +678,18 @@ mod tests {
         assert_eq!(super::leaf_indices(&cards, 0), [8, 9, 10, 8, 10, 11, 4, 5, 6, 4, 6, 7, 0, 1, 2, 0, 2, 3]);
         // Heading 4 is -x.
         assert_eq!(&super::leaf_indices(&cards, 4)[..6], [0, 1, 2, 0, 2, 3]);
+        // The projection-first implementation preserves the previous stable-sort order
+        // for every heading, including cards tied along a heading.
+        let centre = cards.iter().fold(Vec3::ZERO, |sum, card| sum + card.1) / cards.len() as f32;
+        let all = super::leaf_indices_all(&cards);
+        for k in 0..super::LEAF_ORDERS {
+            let a = std::f32::consts::TAU * k as f32 / super::LEAF_ORDERS as f32;
+            let direction = Vec3::new(a.cos(), a.sin(), 0.0);
+            let mut reference: Vec<_> = cards.iter().collect();
+            reference.sort_by(|x, y| (y.1 - centre).dot(direction).total_cmp(&(x.1 - centre).dot(direction)));
+            let expected: Vec<u32> = reference.iter().flat_map(|&&(first, _)| [first, first + 1, first + 2, first, first + 2, first + 3]).collect();
+            assert_eq!(all[k], expected, "heading {k}");
+        }
         // A camera at +y of a tree turned a quarter turn about z lies at its -x: heading 4.
         let tree = GlobalTransform::from(Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)));
         assert_eq!(super::leaf_heading(&tree, Vec3::new(0.0, 5.0, 0.0)), 0);
