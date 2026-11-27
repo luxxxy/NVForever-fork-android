@@ -165,6 +165,8 @@ pub const CHANGE: f32 = 0.004;
 /// [design], and let go beyond [`IDLE_RELEASE`].
 pub const IDLE_RADIUS: f32 = 700.0;
 pub const IDLE_RELEASE: f32 = 840.0;
+const IDLE_RADIUS_SQUARED: f32 = IDLE_RADIUS * IDLE_RADIUS;
+const IDLE_RELEASE_SQUARED: f32 = IDLE_RELEASE * IDLE_RELEASE;
 /// A blink: up in this many seconds, then down in [`BLINK_DOWN`] (0.2 s in all, the
 /// length of the `.lip` files' blinks, lipsync.md §3.1).
 pub const BLINK_UP: f64 = 0.07;
@@ -544,6 +546,10 @@ pub struct LipState {
     tris: HashMap<String, Option<Arc<Tri>>>,
     faces: HashMap<u32, Face>,
     speaking: HashMap<FormId, Speaking>,
+    /// Per-frame scratch buffers retained across updates to avoid repeated heap allocation.
+    spoken_scratch: Vec<(FormId, String, f64, f64, f64, FormId, usize)>,
+    over_scratch: Vec<FormId>,
+    gone_scratch: Vec<u32>,
     /// (speaker, path, start) of the response last looked at per speaker, animated or
     /// skipped, so that each is handled and logged once.
     seen: HashMap<FormId, (String, f64)>,
@@ -595,6 +601,9 @@ impl LipState {
             tris: HashMap::new(),
             faces: HashMap::new(),
             speaking: HashMap::new(),
+            spoken_scratch: Vec::new(),
+            over_scratch: Vec::new(),
+            gone_scratch: Vec::new(),
             seen: HashMap::new(),
             unrigged: HashMap::new(),
             written_heads: Vec::new(),
@@ -817,11 +826,11 @@ fn drive(
     // line, the pause menu): the mouth holds and goes on with the sound.
     // Switched off while a face moves (the settings page): no response counts as said, so
     // the faces ease out and are let go.
-    let spoken: Vec<(FormId, String, f64, f64, f64, FormId, usize)> = if st.enabled {
-        voice.spoken().filter_map(|s| Some((s.speaker, s.path?.to_string(), s.started_at, s.ends_at, s.held_secs, s.info, s.response))).collect()
-    } else {
-        Vec::new()
-    };
+    let mut spoken = std::mem::take(&mut st.spoken_scratch);
+    spoken.clear();
+    if st.enabled {
+        spoken.extend(voice.spoken().filter_map(|s| Some((s.speaker, s.path?.to_string(), s.started_at, s.ends_at, s.held_secs, s.info, s.response))));
+    }
 
     // Responses that started: animate them, or say why not.
     for (speaker, path, started_at, ends_at, _, info, response) in &spoken {
@@ -905,7 +914,8 @@ fn drive(
     }
 
     // The responses being said: follow their clocks; note those let go.
-    let mut over = Vec::new();
+    let mut over = std::mem::take(&mut st.over_scratch);
+    over.clear();
     for (speaker, sp) in st.speaking.iter_mut() {
         let now_said = spoken.iter().find(|(s, p, t, ..)| s == speaker && *p == sp.path && *t == sp.started_at);
         if let Some((_, _, _, ends_at, held_secs, ..)) = now_said {
@@ -922,7 +932,7 @@ fn drive(
             over.push(*speaker);
         }
     }
-    for s in over {
+    for s in over.drain(..) {
         st.speaking.remove(&s);
     }
 
@@ -939,7 +949,7 @@ fn drive(
     if st.enabled && st.hold.is_none() {
         if let Some(cam) = cam {
             for (root, actor, rig, g, .., m) in &rigs {
-                if m.is_some_and(|m| !m.is_empty()) && g.translation().distance(cam) <= IDLE_RELEASE {
+                if m.is_some_and(|m| !m.is_empty()) && g.translation().distance_squared(cam) <= IDLE_RELEASE_SQUARED {
                     ensure_face(st, &mut commands, root, actor, rig, &world, &data, &mut meshes, clock);
                 }
             }
@@ -949,7 +959,7 @@ fn drive(
         if let Some(cam) = cam {
             let mut near: usize = 0;
             for (root, actor, rig, g, _, off, _) in &rigs {
-                if off || g.translation().distance(cam) > IDLE_RADIUS {
+                if off || g.translation().distance_squared(cam) > IDLE_RADIUS_SQUARED {
                     continue;
                 }
                 near += 1;
@@ -965,7 +975,8 @@ fn drive(
     }
 
     // Move the faces; let go of those nothing moves any more.
-    let mut gone = Vec::new();
+    let mut gone = std::mem::take(&mut st.gone_scratch);
+    gone.clear();
     for (&reference, face) in st.faces.iter_mut() {
         face.turn = Quat::IDENTITY;
         let Ok((_, _, _, g, look, off, morphs)) = rigs.get(face.root) else {
@@ -991,7 +1002,7 @@ fn drive(
                 w[s] += full * taken;
             }
         }
-        let far = cam.is_none_or(|c| g.translation().distance(c) > IDLE_RELEASE);
+        let far = cam.is_none_or(|c| g.translation().distance_squared(c) > IDLE_RELEASE_SQUARED);
         let asks = st.enabled && face.held.is_none() && !far && morphs.is_some_and(|m| !m.is_empty());
         if asks {
             let list = asked(morphs.expect("asks"), &mut st.unknown_labels);
@@ -1052,9 +1063,12 @@ fn drive(
             }
         }
     }
-    for r in gone {
+    for r in gone.drain(..) {
         let_go(st, &mut commands, &mut meshes, r);
     }
+    st.spoken_scratch = spoken;
+    st.over_scratch = over;
+    st.gone_scratch = gone;
 }
 
 /// Turn the speakers' heads by their `.lip` head channels, on top of what the frame's
