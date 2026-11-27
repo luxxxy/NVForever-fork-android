@@ -391,7 +391,10 @@ pub(crate) fn prepare(
             usages.0 |= crate::dlss::main_texture_usages();
         }
         // Bevy applies its projection jitter with the opposite displacement sign.
-        jitter.offset = -jitter_offset(camera.frame, policy.jitter_phases);
+        jitter.offset = match camera.settings {
+            UpscaleSettings::Fsr(fsr) if fsr.spatial => Vec2::ZERO,
+            _ => -jitter_offset(camera.frame, policy.jitter_phases),
+        };
         bias.0 = policy.mip_bias;
         // The ambient occlusion: at the render size before the upscaler (ssao.rs
         // `ao_before_fsr`), or with `NVF_AO_BEFORE_FSR=0` after tonemapping, from the depth
