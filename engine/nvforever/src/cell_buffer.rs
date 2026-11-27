@@ -271,7 +271,12 @@ mod tests {
         assert!(!b.holds(Space::World(7), feet((0, -3))));
         b.carry(Space::World(7), feet((0, -3)));
         assert!(b.holds(Space::World(7), feet((0, -3))), "at once");
+        let carried_capacity = b.carried.lock().unwrap().capacity();
         b.remember(7, None, grid(0, 0));
+        assert!(
+            b.carried.lock().unwrap().capacity() >= carried_capacity,
+            "draining carried cells must retain the set's allocation",
+        );
         assert!(b.holds(Space::World(7), feet((0, -3))), "kept");
         for y in 1..=4 {
             b.remember(7, None, grid(0, y));
