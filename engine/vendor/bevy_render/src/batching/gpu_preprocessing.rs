@@ -2851,7 +2851,7 @@ pub fn collect_buffers_for_phase<PI, GFBD>(
 /// one dispatch per range, without a barrier between each.
 fn coalesce_batch_ranges(ranges: &[Range<u32>], merged: &mut Vec<Range<u32>>) {
     merged.clear();
-    merged.reserve(ranges.len().saturating_sub(merged.capacity()));
+    merged.reserve(ranges.len());
     for range in ranges {
         match merged.last_mut() {
             Some(last) if last.end == range.start => last.end = range.end,
