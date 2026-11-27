@@ -554,11 +554,16 @@ impl Playing {
         cycle_time(self.time, self.start, self.stop, self.cycle_type)
     }
 
-    /// Advance by `dt` seconds (unless `paused`) and pose the targets.
-    pub fn step(&mut self, dt: f32, paused: bool, transforms: &mut Query<&mut Transform>) {
+    /// Advance the clip clock without sampling any tracks. Used while its model is hidden:
+    /// time remains current, and the pose is sampled once it becomes visible again.
+    pub fn advance_time(&mut self, dt: f32, paused: bool) {
         if !paused {
             self.time += dt * self.frequency;
         }
+    }
+
+    /// Sample the current clip time into the targets.
+    pub fn pose(&self, transforms: &mut Query<&mut Transform>) {
         let t = self.sequence_time();
         let phase = if self.stop > self.start { (t - self.start) / (self.stop - self.start) } else { 0.0 };
         for (k, (e, track)) in self.tracks.iter().enumerate() {
@@ -594,6 +599,12 @@ impl Playing {
             }
             tr.set_if_neq(posed);
         }
+    }
+
+    /// Advance by `dt` seconds (unless `paused`) and pose the targets.
+    pub fn step(&mut self, dt: f32, paused: bool, transforms: &mut Query<&mut Transform>) {
+        self.advance_time(dt, paused);
+        self.pose(transforms);
     }
 }
 
@@ -1536,11 +1547,17 @@ pub fn advance(time: Res<Time>, mut state: ResMut<AnimState>, mut transforms: Qu
 /// Advance every [`Playing`] component (world objects with their own animation), posing
 /// their nodes and showing and hiding them ([`Playing::show`]). Returns how many nodes
 /// switched between shown and hidden.
-pub fn advance_instances<F: bevy::ecs::query::QueryFilter>(time: Res<Time>, mut playing: Query<&mut Playing, F>, mut transforms: Query<&mut Transform>, mut visibility: Query<&mut Visibility>) -> usize {
+pub fn advance_instances<F: bevy::ecs::query::QueryFilter>(time: Res<Time>, mut playing: Query<(&mut Playing, Option<&InheritedVisibility>), F>, mut transforms: Query<&mut Transform>, mut visibility: Query<&mut Visibility>) -> usize {
     let dt = time.delta_secs();
     let mut switched = 0;
-    for mut p in &mut playing {
+    for (mut p, inherited) in &mut playing {
         let held = p.held;
+        if inherited.is_some_and(|visible| !visible.get()) {
+            // Hidden models do not contribute pixels. Keep their clocks current but avoid
+            // sampling every bone; pose at the current time when the model becomes visible.
+            p.advance_time(dt, held);
+            continue;
+        }
         p.step(dt, held, &mut transforms);
         if !p.shows.is_empty() {
             switched += p.show(&mut visibility);
@@ -1555,6 +1572,30 @@ mod tests {
     use bevy::ecs::system::{RunSystemOnce, SystemState};
     use fnv_nif::anim::{Channel, Key, KeyKind, Keys, Track};
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4};
+
+    #[test]
+    fn hidden_playback_can_advance_its_clock_without_sampling_tracks() {
+        let mut playing = Playing {
+            name: "test".into(),
+            source: "test.kf".into(),
+            start: 0.0,
+            stop: 1.0,
+            frequency: 2.0,
+            cycle_type: 0,
+            time: 0.0,
+            tracks: Vec::new(),
+            unmatched: 0,
+            root_motion: None,
+            held: false,
+            free: Vec::new(),
+            shows: Vec::new(),
+            lights: Vec::new(),
+        };
+        playing.advance_time(0.25, false);
+        assert!((playing.time - 0.5).abs() < f32::EPSILON);
+        playing.advance_time(0.25, true);
+        assert!((playing.time - 0.5).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn a_clip_with_a_nan_key_is_refused() {
