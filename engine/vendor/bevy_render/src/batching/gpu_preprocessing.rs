@@ -16,7 +16,7 @@ use bevy_ecs::{
     query::{Has, With},
     resource::Resource,
     schedule::IntoScheduleConfigs as _,
-    system::{Query, Res, ResMut, StaticSystemParam},
+    system::{Local, Query, Res, ResMut, StaticSystemParam},
     world::{FromWorld, World},
 };
 use bevy_encase_derive::ShaderType;
@@ -2014,13 +2014,16 @@ pub fn delete_old_work_item_buffers<GFBD>(
         BatchedInstanceBuffers<GFBD::BufferData, GFBD::BufferInputData>,
     >,
     extracted_views: Query<&ExtractedView>,
+    mut retained_view_entities: Local<HashSet<RetainedViewEntity>>,
 ) where
     GFBD: GetFullBatchData,
 {
-    let retained_view_entities: HashSet<_> = extracted_views
-        .iter()
-        .map(|extracted_view| extracted_view.retained_view_entity)
-        .collect();
+    retained_view_entities.clear();
+    retained_view_entities.extend(
+        extracted_views
+            .iter()
+            .map(|extracted_view| extracted_view.retained_view_entity),
+    );
     for phase_instance_buffers in gpu_batched_instance_buffers
         .phase_instance_buffers
         .values_mut()
@@ -3047,6 +3050,8 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
     bin_unpacking_buffers: ResMut<SceneUnpackingBuffers>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    mut all_seen_view_entities: Local<HashSet<RetainedViewEntity>>,
+    mut representative_entity_to_batch_set_scene_unpacking_metadata: Local<MainEntityHashMap<BatchSetSceneUnpackingMetadata>>,
 ) where
     BPI: BinnedPhaseItem,
     GFBD: GetFullBatchData,
@@ -3057,7 +3062,7 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
 
     // Record all the `RetainedViewEntity` keys that we saw so that we can
     // delete buffers corresponding to views that went away.
-    let mut all_seen_view_entities = HashSet::new();
+    all_seen_view_entities.clear();
 
     for extracted_view in &mut views {
         all_seen_view_entities.insert(extracted_view.retained_view_entity);
@@ -3100,8 +3105,7 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
         // We use the *representative entity* as the key for the later loop to
         // find the `BatchSetBinUnpackingMetadata`, because it's a unique value
         // that can be fetched from the `BinnedRenderPhaseBatchSet`.
-        let mut representative_entity_to_batch_set_scene_unpacking_metadata =
-            MainEntityHashMap::default();
+        representative_entity_to_batch_set_scene_unpacking_metadata.clear();
 
         for batch_set in batch_sets {
             let main_entity = batch_set.first_batch.representative_entity.1;
