@@ -88,8 +88,13 @@ fn warm(
     // These are the window, reflection and ripple formats used by the first views.
     // Compile them now, before Bevy's first-view preparation can block on them. The
     // remaining image formats and blended variants are queued for background compilation.
-    for key in keys.iter().take(4) {
-        let id = pipelines.specialize(&cache, &blit, *key);
+    let first_ids: Vec<_> = keys
+        .iter()
+        .take(4)
+        .map(|key| pipelines.specialize(&cache, &blit, *key))
+        .collect();
+    // Queue all four before waiting, so the pipeline workers can compile them concurrently.
+    for id in first_ids {
         cache.block_on_render_pipeline(id);
     }
     for key in keys.iter().skip(4) {
