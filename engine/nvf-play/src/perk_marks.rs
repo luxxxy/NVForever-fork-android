@@ -115,7 +115,7 @@ fn mark(
         let drawn_distance = drawn.0;
         scratch.bodies.clear();
         scratch.bodies.extend(phys.npcs.iter().map(|(&id, body)| (id, body.ch.feet)));
-        let (bodies, item_ids, now) = (&scratch.bodies, &mut scratch.item_ids, &mut scratch.now);
+        let MarkScratch { bodies, item_ids, now } = &mut *scratch;
         with_world(rt, &mut sim, |rt| {
             let g = &mut rt.game;
             let distance_sq = |at: [f32; 3]| {
