@@ -76,13 +76,18 @@ impl CellBuffer {
     /// worldspace `world`.
     pub fn remember(&mut self, world: u32, interior: Option<u32>, exterior: impl Iterator<Item = (i32, i32)>) {
         self.frame += 1;
-        let carried = self.carried.get_mut().map(std::mem::take).unwrap_or_default();
         let mut changed = false;
-        for k in carried {
-            changed |= match k {
-                Key::Exterior(w, c) => self.exterior.insert((w, c), self.frame).is_none(),
-                Key::Interior(i) => self.interior.insert(i, self.frame).is_none(),
-            };
+        {
+            // Drain in place: taking the HashSet would drop its buckets at the end of
+            // this frame, forcing actors to allocate the carried-cell set again next frame.
+            let CellBuffer { carried, exterior, interior, frame, .. } = self;
+            let carried = carried.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for k in carried.drain() {
+                changed |= match k {
+                    Key::Exterior(w, c) => exterior.insert((w, c), *frame).is_none(),
+                    Key::Interior(i) => interior.insert(i, *frame).is_none(),
+                };
+            }
         }
         match interior {
             Some(i) => {
