@@ -1516,7 +1516,7 @@ fn folded_mesh(land: &Land, surface: &Surface, q: u8, alphas: &[&[f32]], cell_or
 fn folded_mesh_from_base(mut mesh: Mesh, alphas: &[&[f32]], tile: f32) -> Mesh {
     use bevy::mesh::VertexAttributeValues;
     let at = |k: usize, v: usize| alphas.get(k).map_or(0.0, |a| a[v]);
-    let n = mesh.count_vertices();
+    let n = alphas.first().map_or(0, |a| a.len());
     if let Some(VertexAttributeValues::Float32x4(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
         for (v, c) in col.iter_mut().enumerate() {
             c[3] = at(0, v);
