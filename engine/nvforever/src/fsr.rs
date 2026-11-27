@@ -66,15 +66,18 @@ impl FsrQuality {
 /// Enable FSR on a perspective HDR camera. The graphics settings enforce Msaa::Off
 /// and remove competing temporal/spatial anti-aliasing components.
 #[derive(Component, Clone, Copy, Debug)]
-#[require(Hdr, DepthPrepass, MotionVectorPrepass, TemporalJitter, MipBias)]
+#[require(Hdr, DepthPrepass, TemporalJitter, MipBias)]
 pub struct FsrUpscaling {
     pub quality: FsrQuality,
     pub sharpness: f32,
+    /// Skip FSR's temporal compute chain and use the shared linear spatial upscale.
+    /// Intended for mobile GPUs where FSR's reconstruction costs more than it saves.
+    pub spatial: bool,
 }
 
 impl Default for FsrUpscaling {
     fn default() -> Self {
-        Self { quality: FsrQuality::Quality, sharpness: 0.2 }
+        Self { quality: FsrQuality::Quality, sharpness: 0.2, spatial: false }
     }
 }
 
@@ -312,6 +315,12 @@ pub(crate) fn prepare(
             }
             continue;
         };
+        if settings.spatial {
+            if old.is_some() {
+                commands.entity(entity).remove::<PreparedFsr>();
+            }
+            continue;
+        }
         debug_assert!(prep::allocates_fsr_state(prepared.camera.settings.upscaler()));
         // Made with the prepared view (`prep::prepare`).
         let Some(common) = &upscale.0 else { continue };
@@ -556,12 +565,17 @@ impl wgpu_ffx::FsrPassRecorder for FsrGpuPassRecorder<'_> {
 /// `upscaler::prep::Pipelines`', called here in the order FSR always ran them.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn fsr_pass(
-    view: ViewQuery<(&ViewTarget, &PreparedUpscale, &PreparedFsr, Option<&ViewPrepassTextures>, &TemporalJitter)>,
+    view: ViewQuery<(&ViewTarget, &PreparedUpscale, Option<&PreparedFsr>, Option<&ViewPrepassTextures>, &TemporalJitter)>,
     renderer: Res<FsrRenderer>, upscale: Res<UpscaleRenderer>, device: Res<RenderDevice>, frame_generation: Option<Res<crate::frame_gen::FrameGenRequest>>, mut ctx: RenderContext,
 ) {
     let (target, prepared, fsr, prepass, jitter) = view.into_inner();
-    let (Some(auxiliary), Some(common)) = (&renderer.auxiliary, &upscale.0) else { return };
+    let Some(common) = &upscale.0 else { return };
     let UpscaleSettings::Fsr(settings) = prepared.camera.settings else { return };
+    if settings.spatial {
+        common.fallback(device.wgpu_device(), ctx.command_encoder(), prepared, target);
+        return;
+    }
+    let (Some(auxiliary), Some(fsr)) = (&renderer.auxiliary, fsr) else { return };
     let recording = crate::frame_pace::recording();
     let inputs = prepass.and_then(|prepass| prepass.depth.as_ref().zip(prepass.motion_vectors.as_ref()));
     let Some((depth, motion)) = inputs else {
