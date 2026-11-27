@@ -3722,6 +3722,44 @@ mod tests {
     }
 
     #[test]
+    fn shared_quadrant_geometry_matches_independently_built_layer_meshes() {
+        let land = sloped_land();
+        let patterns = [
+            vec![0.0; QUAD_SIDE * QUAD_SIDE],
+            (0..QUAD_SIDE * QUAD_SIDE).map(|i| if i % 7 == 0 { 0.35 } else { 0.0 }).collect(),
+            (0..QUAD_SIDE * QUAD_SIDE).map(|i| (i % 5) as f32 * 0.25).collect(),
+        ];
+        let draws = [
+            QuadrantDraw::FULL,
+            QuadrantDraw::HALF,
+            QuadrantDraw { step: 1, coarse: [true, false, true, false] },
+        ];
+        for draw in draws {
+            let surface = smoothed_with(&land, fnv_world::land_surface::SmoothParams { subdiv: 4, ..Default::default() });
+            let sub = drawn_sub(&surface, draw);
+            for alpha in &patterns {
+                let refined = refine_quad(alpha, sub);
+                for q in 0..4u8 {
+                    let base = quadrant_mesh_drawn(&land, &surface, q, draw, None, Vec2::ZERO, 256.0).unwrap();
+                    let shared = layer_mesh_from_base(base, &refined);
+                    let direct = quadrant_mesh_drawn(&land, &surface, q, draw, Some(&refined), Vec2::ZERO, 256.0);
+                    match (shared, direct) {
+                        (None, None) => {}
+                        (Some(a), Some(b)) => {
+                            assert_eq!(triangles(&a), triangles(&b), "q{q} {draw:?}");
+                            for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0, Mesh::ATTRIBUTE_TANGENT] {
+                                assert_eq!(a.attribute(attribute), b.attribute(attribute), "q{q} {draw:?}: {attribute:?}");
+                            }
+                            assert_eq!(a.attribute(Mesh::ATTRIBUTE_COLOR), b.attribute(Mesh::ATTRIBUTE_COLOR), "q{q} {draw:?}: opacity");
+                        }
+                        _ => panic!("shared and direct layer construction disagree: q{q} {draw:?}"),
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_layer_keeps_only_the_triangles_it_paints() {
         let land = sloped_land();
         // The base keeps every triangle.
