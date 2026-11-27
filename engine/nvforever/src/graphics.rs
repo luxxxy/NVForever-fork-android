@@ -353,7 +353,10 @@ impl Graphics {
             // and the owner plays with 8x multisampling (docs/design/graphics-enhanced.md
             // §3.6). The shadow filter stays Bevy's default too (§3.9).
             screen_aa: ScreenAa::Off,
-            upscaler: UpscalerChoice::Off,
+            // Android starts at FSR Performance with the mobile spatial path enabled:
+            // this gives low-power GPUs a reduced render target immediately. An explicit
+            // INI/command-line choice still overrides the preset during settings loading.
+            upscaler: if cfg!(target_os = "android") { UpscalerChoice::Fsr(UpscaleQuality::Performance) } else { UpscalerChoice::Off },
             mobile_fast_upscale: cfg!(target_os = "android"),
             dlss_model: DlssModel::Default,
             light_shafts: on,
