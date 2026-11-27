@@ -1,4 +1,4 @@
-use core::{any::TypeId, mem};
+use core::any::TypeId;
 
 use bevy_ecs::{
     change_detection::Tick,
@@ -199,56 +199,49 @@ impl RenderVisibleEntitiesClass {
         #[cfg(feature = "trace")]
         let _update_from = info_span!("update_from", name = "update_from").entered();
 
-        let old_entities_cpu_culling = mem::take(&mut self.entities_cpu_culling);
+        // Diff the sorted lists before replacing the current list. Keeping the
+        // existing vector alive until the diff is complete lets us clear and refill
+        // it in place, retaining its allocation across frames.
+        let old_entities = &self.entities_cpu_culling;
+        let mut old_index = 0;
+        let mut new_index = 0;
 
-        // March over the old and new visible CPU culling entity lists in
-        // lockstep, diffing as we go to determine the added and removed
-        // entities. The lists must be sorted.
-        let mut old_entity_cpu_culling_iter = old_entities_cpu_culling.iter().peekable();
+        #[cfg(feature = "trace")]
+        let _old_entity_cpu_culling_span =
+            info_span!("old_entity_cpu_culling", name = "old_entity_cpu_culling").entered();
+
+        while old_index < old_entities.len()
+            && new_index < visible_mesh_entities_cpu_culling.len()
         {
-            #[cfg(feature = "trace")]
-            let _old_entity_cpu_culling_span =
-                info_span!("old_entity_cpu_culling", name = "old_entity_cpu_culling").entered();
-            for (render_entity, visible_main_entity) in visible_mesh_entities_cpu_culling {
-                // Mark entities as removed until we see the one we're looking at.
-                while old_entity_cpu_culling_iter
-                    .peek()
-                    .is_some_and(|(_, main_entity)| *main_entity < *visible_main_entity)
-                {
-                    self.removed_entities
-                        .push(*old_entity_cpu_culling_iter.next().unwrap());
+            let old = old_entities[old_index];
+            let new = visible_mesh_entities_cpu_culling[new_index];
+
+            match old.1.cmp(&new.1) {
+                core::cmp::Ordering::Less => {
+                    self.removed_entities.push(old);
+                    old_index += 1;
                 }
-
-                // Add the visible entity to the list.
-                self.entities_cpu_culling
-                    .push((*render_entity, *visible_main_entity));
-
-                // If the next entity in the old list isn't equal to the entity we
-                // just marked visible, then our entity is newly visible this frame.
-                if old_entity_cpu_culling_iter
-                    .peek()
-                    .is_some_and(|&&(_, main_entity)| main_entity == *visible_main_entity)
-                {
-                    old_entity_cpu_culling_iter.next();
-                } else {
-                    self.added_entities
-                        .push((*render_entity, *visible_main_entity));
+                core::cmp::Ordering::Greater => {
+                    self.added_entities.push(new);
+                    new_index += 1;
+                }
+                core::cmp::Ordering::Equal => {
+                    old_index += 1;
+                    new_index += 1;
                 }
             }
         }
 
-        // Any entities that do CPU culling and that we didn't see yet are
-        // removed, so drain them.
-        {
-            #[cfg(feature = "trace")]
-            let _old_entity_cpu_culling_removal_span = info_span!(
-                "old_entity_cpu_culling_removal",
-                name = "old_entity_cpu_culling_removal"
-            )
-            .entered();
-            self.removed_entities
-                .extend(old_entity_cpu_culling_iter.copied());
-        }
+        self.removed_entities
+            .extend_from_slice(&old_entities[old_index..]);
+        self.added_entities
+            .extend_from_slice(&visible_mesh_entities_cpu_culling[new_index..]);
+
+        // Reuse the old list's allocation instead of dropping it via mem::take
+        // and allocating fresh storage for the replacement list every frame.
+        self.entities_cpu_culling.clear();
+        self.entities_cpu_culling
+            .extend_from_slice(visible_mesh_entities_cpu_culling);
     }
 
     /// Returns the list of newly-added entities.
