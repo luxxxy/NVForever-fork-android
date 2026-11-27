@@ -128,6 +128,11 @@ pub struct CapturedScreenshots(pub Arc<Mutex<Receiver<(Entity, Image)>>>);
 #[derive(Resource, Deref, DerefMut, Default)]
 struct RenderScreenshotTargets(EntityHashMap<NormalizedRenderTarget>);
 
+/// Returns whether this frame has any screenshot targets to encode.
+pub(crate) fn has_pending_screenshot_commands(world: &World) -> bool {
+    !world.resource::<RenderScreenshotTargets>().is_empty()
+}
+
 #[derive(Resource, Deref, DerefMut, Default)]
 struct RenderScreenshotsPrepared(EntityHashMap<ScreenshotPreparedState>);
 
