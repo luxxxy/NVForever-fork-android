@@ -48,16 +48,25 @@ pub struct CellBuffer {
     exterior: HashMap<(u32, (i32, i32)), u64>,
     interior: HashMap<u32, u64>,
     frame: u64,
+    /// Changes only when the buffered cell membership changes; scripts need not rebuild
+    /// and sort the same cell lists on every frame.
+    generation: u64,
     /// Interiors behind the load doors of the exterior cells drawn so far (Mid-Low),
     /// and the exterior cells whose doors were looked at.
     behind_doors: HashSet<u32>,
     doors_seen: HashSet<(u32, (i32, i32))>,
-    /// Cells actors walked into this frame ([`CellBuffer::carry`]), taken in at the next
-    /// [`CellBuffer::remember`].
-    carried: std::sync::Mutex<Vec<Key>>,
+    /// Distinct cells actors walked into this frame ([`CellBuffer::carry`]), taken in at
+    /// the next [`CellBuffer::remember`]. A set makes per-actor membership checks O(1)
+    /// instead of scanning a growing vector, and coalesces repeated entries for a cell.
+    carried: std::sync::Mutex<HashSet<Key>>,
 }
 
 impl CellBuffer {
+    /// Membership revision for consumers that only need to react when the set changes.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// The cells kept: exterior grid squares by worldspace, and interiors.
     pub fn cells(&self) -> (impl Iterator<Item = (u32, (i32, i32))> + '_, impl Iterator<Item = u32> + '_) {
         (self.exterior.keys().copied(), self.interior.keys().copied())
@@ -67,32 +76,41 @@ impl CellBuffer {
     /// worldspace `world`.
     pub fn remember(&mut self, world: u32, interior: Option<u32>, exterior: impl Iterator<Item = (i32, i32)>) {
         self.frame += 1;
-        let carried = self.carried.get_mut().map(std::mem::take).unwrap_or_default();
-        for k in carried {
-            match k {
-                Key::Exterior(w, c) => self.exterior.insert((w, c), self.frame),
-                Key::Interior(i) => self.interior.insert(i, self.frame),
-            };
+        let mut changed = false;
+        {
+            // Drain in place: taking the HashSet would drop its buckets at the end of
+            // this frame, forcing actors to allocate the carried-cell set again next frame.
+            let CellBuffer { carried, exterior, interior, frame, .. } = self;
+            let carried = carried.get_mut().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for k in carried.drain() {
+                changed |= match k {
+                    Key::Exterior(w, c) => exterior.insert((w, c), *frame).is_none(),
+                    Key::Interior(i) => interior.insert(i, *frame).is_none(),
+                };
+            }
         }
         match interior {
             Some(i) => {
-                self.interior.insert(i, self.frame);
+                changed |= self.interior.insert(i, self.frame).is_none();
             }
             None => {
                 for c in exterior {
-                    self.exterior.insert((world, c), self.frame);
+                    changed |= self.exterior.insert((world, c), self.frame).is_none();
                 }
             }
         }
-        keep_newest(&mut self.exterior, EXTERIOR_CELLS);
-        keep_newest(&mut self.interior, INTERIOR_CELLS);
+        changed |= keep_newest(&mut self.exterior, EXTERIOR_CELLS);
+        changed |= keep_newest(&mut self.interior, INTERIOR_CELLS);
+        if changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     /// An actor walked into the cell at `feet` in `space`: the cell counts as buffered
     /// from now (module notes).
     pub fn carry(&self, space: Space, feet: [f32; 3]) {
         if let Ok(mut c) = self.carried.lock() {
-            c.push(key(space, feet));
+            c.insert(key(space, feet));
         }
     }
 
@@ -133,7 +151,7 @@ impl CellBuffer {
 }
 
 /// A cell of the buffer.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum Key {
     Exterior(u32, (i32, i32)),
     Interior(u32),
@@ -147,15 +165,16 @@ fn key(space: Space, feet: [f32; 3]) -> Key {
 }
 
 /// Drop the oldest entries beyond `n` (among cells left in the same frame, any).
-fn keep_newest<K: Copy + Eq + std::hash::Hash>(m: &mut HashMap<K, u64>, n: usize) {
+fn keep_newest<K: Copy + Eq + std::hash::Hash>(m: &mut HashMap<K, u64>, n: usize) -> bool {
     if m.len() <= n {
-        return;
+        return false;
     }
     let mut by_age: Vec<(u64, K)> = m.iter().map(|(k, f)| (*f, *k)).collect();
     by_age.sort_unstable_by_key(|e| std::cmp::Reverse(e.0));
     for (_, k) in &by_age[n..] {
         m.remove(k);
     }
+    true
 }
 
 /// Note the cells drawn this frame (after `world::stream`), and the interiors behind
@@ -166,26 +185,29 @@ pub fn remember(mut streamer: ResMut<Streamer>, world: Res<WorldData>, sim: Opti
         None => residents.and_then(|mut r| r.own_game().map(|g| g.world.placed)),
     };
     let s = &mut *streamer;
-    // The loading screen's placeholder key is no cell.
-    let drawn = || s.loaded.keys().copied().filter(|&(x, _)| x != i32::MIN);
+    // Borrow the loaded-cell map separately from the buffer so the iterator can be
+    // consumed directly by both passes. Collecting it into a temporary Vec every frame
+    // allocated even though the loaded set is already available and stable for the pass.
+    let loaded = &s.loaded;
+    let drawn = || loaded.keys().copied().filter(|&(x, _)| x != i32::MIN);
     if let (Some(refs), None) = (refs, s.interior) {
         s.buffer.note_doors(refs, world.world, drawn());
     }
-    let drawn: Vec<(i32, i32)> = drawn().collect();
-    s.buffer.remember(world.world, s.interior, drawn.into_iter());
+    s.buffer.remember(world.world, s.interior, drawn());
 }
 
 /// Tell the scripts' game the cells kept, when they change (GetBufferedCells,
 /// GetCellBuffered; `fnv_game::nvse_jip12`): the exterior squares as their cells.
-pub fn tell_game(streamer: Res<Streamer>, script: Option<ResMut<nvf_play::script::ScriptState>>, mut told: Local<Vec<(u32, (i32, i32))>>, mut told_in: Local<Vec<u32>>) {
+pub fn tell_game(streamer: Res<Streamer>, script: Option<ResMut<nvf_play::script::ScriptState>>, mut told_generation: Local<Option<u64>>) {
     let Some(rt) = script.and_then(|s| s.into_inner().rt.as_mut()) else { return };
+    let generation = streamer.buffer.generation();
+    if *told_generation == Some(generation) {
+        return;
+    }
     let (ext, int) = streamer.buffer.cells();
     let (mut ext, mut int): (Vec<_>, Vec<_>) = (ext.collect(), int.collect());
     ext.sort_unstable();
     int.sort_unstable();
-    if *told == ext && *told_in == int {
-        return;
-    }
     let g = &mut rt.game;
     let mut cells: std::collections::BTreeSet<fnv_sim::FormId> = int.iter().map(|&c| fnv_sim::FormId(c)).collect();
     for &(w, xy) in &ext {
@@ -194,7 +216,7 @@ pub fn tell_game(streamer: Res<Streamer>, script: Option<ResMut<nvf_play::script
         }
     }
     g.set_buffered_cells(cells);
-    (*told, *told_in) = (ext, int);
+    *told_generation = Some(generation);
 }
 
 #[cfg(test)]
@@ -207,6 +229,20 @@ mod tests {
 
     fn feet(c: (i32, i32)) -> [f32; 3] {
         [c.0 as f32 * 4096.0 + 100.0, c.1 as f32 * 4096.0 + 100.0, 0.0]
+    }
+
+    #[test]
+    fn generation_changes_only_when_buffered_membership_changes() {
+        let mut b = CellBuffer::default();
+        assert_eq!(b.generation(), 0);
+        b.remember(7, None, grid(0, 0));
+        assert_eq!(b.generation(), 1);
+        // Refreshing the age of the same cells must not trigger a script resync.
+        b.remember(7, None, grid(0, 0));
+        assert_eq!(b.generation(), 1);
+        // Moving the grid adds buffered cells and advances the membership revision.
+        b.remember(7, None, grid(0, 1));
+        assert_eq!(b.generation(), 2);
     }
 
     #[test]
@@ -235,7 +271,12 @@ mod tests {
         assert!(!b.holds(Space::World(7), feet((0, -3))));
         b.carry(Space::World(7), feet((0, -3)));
         assert!(b.holds(Space::World(7), feet((0, -3))), "at once");
+        let carried_capacity = b.carried.lock().unwrap().capacity();
         b.remember(7, None, grid(0, 0));
+        assert!(
+            b.carried.lock().unwrap().capacity() >= carried_capacity,
+            "draining carried cells must retain the set's allocation",
+        );
         assert!(b.holds(Space::World(7), feet((0, -3))), "kept");
         for y in 1..=4 {
             b.remember(7, None, grid(0, y));

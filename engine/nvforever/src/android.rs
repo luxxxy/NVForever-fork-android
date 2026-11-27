@@ -47,6 +47,21 @@ pub fn prepare() -> Result<Vec<String>, String> {
     std::env::set_var("NVFOREVER_HOME", files.join("home"));
     std::env::set_var("NVF_REPORTS", "0");
     std::env::set_var("WGPU_BACKEND", "vulkan");
+    // Only the Android diagnostic build opts into bounded performance capture.
+    // Preserve explicit caller overrides; defaults are read before Bevy starts.
+    #[cfg(feature = "profile")]
+    for (name, value) in [
+        ("NVF_PLAY_TEST_PROFILE", "5"),
+        ("NVF_PLAY_TEST_PROFILE_COUNTS", "1"),
+        ("NVF_PLAY_TEST_PROFILE_HITCH_MS", "33"),
+        ("NVF_PLAY_TEST_SAMPLE", "5"),
+        ("NVF_PLAY_TEST_FRAME_TELEMETRY", "60"),
+        ("NVF_PLAY_TEST_FRAME_TELEMETRY_GPU", "1"),
+    ] {
+        if std::env::var_os(name).is_none() {
+            std::env::set_var(name, value);
+        }
+    }
     std::env::set_var(
         "NVF_PLAY_SCRIPT_FUNCTIONS",
         files.join("runtime/schemas/script/functions.json"),

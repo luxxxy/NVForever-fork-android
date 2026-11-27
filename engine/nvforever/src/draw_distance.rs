@@ -220,9 +220,18 @@ pub(crate) fn apply_ranges(
     parents: Query<&ChildOf>,
     marks: Query<Marks>,
     mut known: Local<HashMap<u32, DrawClass>>,
+    mut entities_scratch: Local<Vec<Entity>>,
     mut work: Option<ResMut<crate::quality_probe::Work>>,
 ) {
-    let entities: Vec<Entity> = if distances.is_changed() { all.iter().collect() } else { changed.iter().collect() };
+    // Reuse the changed-mesh list's capacity across frames; fade transitions can make
+    // this system run repeatedly while a large cell streams in.
+    let entities = &mut *entities_scratch;
+    entities.clear();
+    if distances.is_changed() {
+        entities.extend(all.iter());
+    } else {
+        entities.extend(changed.iter());
+    }
     if let Some(work) = work.as_mut().filter(|_| distances.is_changed()) {
         work.ranges += 1;
         work.range_meshes += entities.len() as u64;
@@ -237,7 +246,7 @@ pub(crate) fn apply_ranges(
             entities.len()
         );
     }
-    for e in entities {
+    for &e in entities.iter() {
         let Ok((r, material, blend, range, class)) = meshes.get_mut(e) else { continue };
         let class = match class {
             Some(c) => *c,

@@ -200,6 +200,9 @@ pub struct Graphics {
     /// selected AA while active; UI is drawn at output resolution. FSR's code reads and writes
     /// it through [`Graphics::fsr`] and [`Graphics::set_fsr`].
     pub upscaler: UpscalerChoice,
+    /// On Android, replace temporal FSR reconstruction with a single linear upscale.
+    /// This trades image detail for substantially lower GPU cost on mobile hardware.
+    pub mobile_fast_upscale: bool,
     /// The DLSS model asked for (the DLSS model row, `--dlss-model`; `upscaler::DlssModel`):
     /// used while DLSS draws, kept meanwhile. Default: NVIDIA's own pick for each quality.
     pub dlss_model: DlssModel,
@@ -350,7 +353,11 @@ impl Graphics {
             // and the owner plays with 8x multisampling (docs/design/graphics-enhanced.md
             // §3.6). The shadow filter stays Bevy's default too (§3.9).
             screen_aa: ScreenAa::Off,
-            upscaler: UpscalerChoice::Off,
+            // Android starts at FSR Performance with the mobile spatial path enabled:
+            // this gives low-power GPUs a reduced render target immediately. An explicit
+            // INI/command-line choice still overrides the preset during settings loading.
+            upscaler: if cfg!(target_os = "android") { UpscalerChoice::Fsr(UpscaleQuality::Performance) } else { UpscalerChoice::Off },
+            mobile_fast_upscale: cfg!(target_os = "android"),
             dlss_model: DlssModel::Default,
             light_shafts: on,
             water_reflections: on,
@@ -1044,7 +1051,11 @@ fn apply(
     }
     let upscaler = crate::upscaler::effective_temporal(g.fsr(), fsr_support.0, status.as_deref());
     let (fsr, dlss) = (upscaler.fsr(), upscaler.dlss());
-    let temporal = upscaler != UpscalerChoice::Off;
+    // Spatial fallback does not use temporal history or motion vectors. Treat it like
+    // a spatial AA path for cut-outs/MSAA, while retaining the depth prepass needed by
+    // full-resolution screen-space effects after the upscale.
+    let spatial_mobile = cfg!(target_os = "android") && g.mobile_fast_upscale && fsr.is_some();
+    let temporal = upscaler != UpscalerChoice::Off && !spatial_mobile;
     // Blended shapes that draw the same as cut-outs (the corn rows) are cut-outs for a
     // temporal upscaler, which needs their depth and motion (nif_material::BlendedCutouts).
     if let Some(mut cutouts) = cutouts {
@@ -1131,12 +1142,20 @@ fn apply(
         }
         if let Some(quality) = fsr {
             e.insert((
-                FsrUpscaling { quality, sharpness: if g.sharpen { 0.2 } else { 0.0 } },
+                FsrUpscaling {
+                    quality,
+                    sharpness: if g.sharpen { 0.2 } else { 0.0 },
+                    spatial: cfg!(target_os = "android") && g.mobile_fast_upscale,
+                },
                 bevy::core_pipeline::prepass::DepthPrepass,
-                bevy::core_pipeline::prepass::MotionVectorPrepass,
                 TemporalJitter::default(),
                 MipBias(-1.0),
             ));
+            if cfg!(target_os = "android") && g.mobile_fast_upscale {
+                e.remove::<bevy::core_pipeline::prepass::MotionVectorPrepass>();
+            } else {
+                e.insert(bevy::core_pipeline::prepass::MotionVectorPrepass);
+            }
         } else {
             e.remove::<FsrUpscaling>();
         }
@@ -1208,6 +1227,17 @@ fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn android_preset_starts_with_performance_spatial_upscaling() {
+        let graphics = Graphics::preset(Preset::Vanilla);
+        if cfg!(target_os = "android") {
+            assert_eq!(graphics.upscaler, UpscalerChoice::Fsr(UpscaleQuality::Performance));
+            assert!(graphics.mobile_fast_upscale);
+        } else {
+            assert_eq!(graphics.upscaler, UpscalerChoice::Off);
+        }
+    }
 
     fn aa_app(screen_aa: ScreenAa, supported: bool) -> (App, Entity) {
         let mut app = App::new();

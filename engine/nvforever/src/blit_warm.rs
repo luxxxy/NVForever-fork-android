@@ -13,39 +13,48 @@
 //! [observed: tools/stress tour Goodsprings–Primm, 2026-10-27; docs/design/
 //! streaming-hitches.md §3 had the frame as "not looked into yet"].
 //!
-//! Every key the game's cameras can ask for is specialized once on the render app's first
-//! frames ([`KEYS`]), without waiting: the compiles finish under the loading screen and
-//! a later camera finds its pipeline ready. The formats are those of the window (Bevy
-//! names a window's Bgra8UnormSrgb Rgba8UnormSrgb) and of the image targets
-//! (Bgra8UnormSrgb for the Pip-Boy, terminal, scope and table views, Rgba16Float for the
-//! reflection, R32Float for the ripples); a camera after the first on a target blends
-//! (alpha blending); no camera sets a compositing space [engineering choice: a dozen small
-//! full-screen pipelines].
+//! Every key the game's cameras can ask for is specialized during render startup
+//! ([`keys`]). The first-view formats are compiled before the first rendered frame; the
+//! remaining image formats and blended variants are queued for background compilation.
+//! The formats are those of the window (Bevy names a window's Bgra8UnormSrgb and
+//! Rgba8UnormSrgb) and of the image targets (Bgra8UnormSrgb for the Pip-Boy, terminal,
+//! scope and table views, Rgba16Float for the reflection, R32Float for the ripples); a
+//! camera after the first on a target blends (alpha blending); no camera sets a
+//! compositing space [engineering choice: a dozen small full-screen pipelines].
 
 use bevy::core_pipeline::blit::{BlitPipeline, BlitPipelineKey};
 use bevy::prelude::*;
 use bevy::render::render_resource::{BlendState, PipelineCache, SpecializedRenderPipelines, TextureFormat};
-use bevy::render::{Render, RenderApp, RenderSystems};
+use bevy::render::{RenderApp, RenderStartup};
 
 /// The output formats of the game's views.
 const FORMATS: [TextureFormat; 6] = [
     TextureFormat::Rgba8UnormSrgb,
     TextureFormat::Bgra8UnormSrgb,
-    TextureFormat::Rgba8Unorm,
-    TextureFormat::Bgra8Unorm,
     TextureFormat::Rgba16Float,
     TextureFormat::R32Float,
+    TextureFormat::Rgba8Unorm,
+    TextureFormat::Bgra8Unorm,
 ];
 
 /// Every upscaling key warmed: each format, written over (the first camera on a target)
 /// and blended (the ones after it).
 pub fn keys() -> Vec<BlitPipelineKey> {
-    FORMATS
-        .iter()
-        .flat_map(|&target_format| {
-            [None, Some(BlendState::ALPHA_BLENDING)].map(|blend_state| BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state, samples: 1, source_space: None })
-        })
-        .collect()
+    let mut keys = Vec::with_capacity(FORMATS.len() * 2);
+
+    // The main window uses one of the first two formats. The reflection and ripple
+    // targets use the next two. Keep all four first-view formats ahead of secondary
+    // unorm targets and blended variants.
+    for &target_format in &FORMATS[..2] {
+        keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: None, samples: 1, source_space: None });
+    }
+    for &target_format in &FORMATS[2..] {
+        keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: None, samples: 1, source_space: None });
+    }
+    for &target_format in &FORMATS {
+        keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: Some(BlendState::ALPHA_BLENDING), samples: 1, source_space: None });
+    }
+    keys
 }
 
 pub struct BlitWarmPlugin;
@@ -53,34 +62,64 @@ pub struct BlitWarmPlugin;
 impl Plugin for BlitWarmPlugin {
     fn build(&self, app: &mut App) {
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
-            render.add_systems(Render, warm.in_set(RenderSystems::Prepare));
+            // The first view blocks in Bevy's prepare_view_upscaling_pipelines until
+            // its blit pipeline is ready. Compile first-view variants during RenderStartup,
+            // after Bevy has created both resources, rather than racing that blocking
+            // system in RenderSystems::Prepare. RenderStartup runs again on device recovery.
+            render.add_systems(
+                RenderStartup,
+                warm
+                    .after(bevy::core_pipeline::blit::init_blit_pipeline)
+                    .after(bevy::render::init_gpu_resource::<SpecializedRenderPipelines<BlitPipeline>>),
+            );
         }
     }
 }
 
-/// Specializes every key once, as soon as the blit pipeline exists (it is made in the
-/// render app's start-up).
+/// Specializes every key after the blit pipeline and specialized-pipeline cache have
+/// been initialized for this render device.
 fn warm(
-    mut done: Local<bool>,
-    cache: Res<PipelineCache>,
-    blit: Option<Res<BlitPipeline>>,
-    pipelines: Option<ResMut<SpecializedRenderPipelines<BlitPipeline>>>,
+    mut cache: ResMut<PipelineCache>,
+    blit: Res<BlitPipeline>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<BlitPipeline>>,
 ) {
-    if *done {
-        return;
-    }
-    let (Some(blit), Some(mut pipelines)) = (blit, pipelines) else { return };
     let keys = keys();
-    for key in &keys {
+
+    // These are the window, reflection and ripple formats used by the first views.
+    // Compile them now, before Bevy's first-view preparation can block on them. The
+    // remaining image formats and blended variants are queued for background compilation.
+    let first_ids: Vec<_> = keys
+        .iter()
+        .take(4)
+        .map(|key| pipelines.specialize(&cache, &blit, *key))
+        .collect();
+    // Queue all four before waiting, so the pipeline workers can compile them concurrently.
+    for id in first_ids {
+        cache.block_on_render_pipeline(id);
+    }
+    for key in keys.iter().skip(4) {
         pipelines.specialize(&cache, &blit, *key);
     }
-    *done = true;
-    info!("blit warm: {} upscaling pipelines queued for compiling at start-up", keys.len());
+    info!(
+        "blit warm: 4 first-view pipelines ready; {} secondary variants queued during render startup",
+        keys.len() - 4
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_window_srgb_variants_are_first_and_unblended() {
+        let k = keys();
+        assert_eq!(k[0].target_format, TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(k[1].target_format, TextureFormat::Bgra8UnormSrgb);
+        assert_eq!(k[2].target_format, TextureFormat::Rgba16Float);
+        assert_eq!(k[3].target_format, TextureFormat::R32Float);
+        assert!(k[0].blend_state.is_none());
+        assert!(k[1].blend_state.is_none());
+    }
 
     #[test]
     fn every_format_written_and_blended() {

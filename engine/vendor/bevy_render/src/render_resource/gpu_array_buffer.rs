@@ -56,6 +56,14 @@ impl<T: GpuArrayBufferable> GpuArrayBuffer<T> {
         }
     }
 
+    /// Preallocates CPU-side storage for the expected number of instances.
+    /// This avoids growing the byte vector repeatedly while preparing a large frame.
+    pub fn reserve_internal(&mut self, count: usize) {
+        if let GpuArrayBuffer::Storage(buffer) = self {
+            buffer.reserve_internal(count);
+        }
+    }
+
     pub fn push(&mut self, value: T) -> GpuArrayBufferIndex<T> {
         match self {
             GpuArrayBuffer::Uniform(buffer) => buffer.push(value),

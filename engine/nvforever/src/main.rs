@@ -1230,6 +1230,79 @@ pub fn run_android() {
     }
 }
 
+/// Reapply the Android low-end policy after NVForever.ini has been read.
+/// The early values are needed while plugins are constructed; this pass makes the
+/// runtime state authoritative before the first Update/cell load.
+#[cfg(target_os = "android")]
+fn apply_android_performance_policy(world: &mut World) {
+    // Read device support before taking the mutable graphics resource borrow.
+    let fsr_supported = world
+        .get_resource::<crate::fsr::FsrSupport>()
+        .is_some_and(|support| support.0);
+    if let Some(mut graphics) = world.get_resource_mut::<graphics::Graphics>() {
+        graphics.ambient_occlusion = false;
+        graphics.fine_shadows = false;
+        graphics.bloom = false;
+        graphics.glow = false;
+        graphics.eye_adaptation = false;
+        graphics.neon_glow = false;
+        graphics.sharpen = false;
+        graphics.anisotropic = false;
+        graphics.screen_aa = graphics::ScreenAa::Off;
+        graphics.light_shafts = false;
+        graphics.water_reflections = false;
+        graphics.water_effects = false;
+        graphics.water_mirror = false;
+        graphics.shadow_filter = bevy::light::ShadowFilteringMethod::Hardware2x2;
+        graphics.mesh_terrain_blend = false;
+        graphics.terrain_height_blend = false;
+        graphics.terrain_anti_tiling = false;
+        graphics.terrain_parallax = false;
+        graphics.cloud_shadows = false;
+        graphics.terrain_shadows = false;
+        graphics.volumetric_clouds = false;
+        graphics.volumetric_light = false;
+        graphics.aerial_perspective = false;
+        graphics.night_sky_detail = false;
+        graphics.distant_lights = false;
+        graphics.distant_objects = crate::distant_objects::DistantObjects::Off;
+        graphics.full_detail = crate::full_detail::FullDetail::Off;
+
+        // Use the most aggressive supported FSR scale automatically. The upscaler
+        // resolves to native rendering on devices that do not support this Vulkan path.
+        graphics.upscaler = if fsr_supported {
+            crate::upscaler::UpscalerChoice::Fsr(
+                crate::upscaler::UpscaleQuality::UltraPerformance,
+            )
+        } else {
+            crate::upscaler::UpscalerChoice::Off
+        };
+        info!(
+            "Android performance policy: low effects, distant detail off, FSR {}; native fallback if unsupported",
+            if fsr_supported { "Ultra Performance (~33% render scale)" } else { "unavailable" }
+        );
+    }
+    if let Some(mut pace) = world.get_resource_mut::<crate::frame_pace::FramePace>() {
+        pace.cap = 30;
+    }
+    if let Some(mut msaa) = world.get_resource_mut::<graphics::MsaaSetting>() {
+        msaa.0 = Msaa::Off;
+    }
+    // GraphicsPlugin's desktop-compatible default is 8x anisotropy when the
+    // enhanced switch is off; mobile does not need to pay that sampling cost.
+    nvf_assets::texture::set_anisotropy(1);
+    if let Some(mut sky) = world.get_resource_mut::<crate::sky::SkyState>() {
+        sky.shadows = false;
+    }
+    if let Some(mut lod) = world.get_resource_mut::<crate::lod::LodState>() {
+        lod.enabled = false;
+    }
+    if let Some(mut streamer) = world.get_resource_mut::<crate::world::Streamer>() {
+        streamer.fade_secs = 0.0;
+    }
+    info!("Android performance policy applied after stored settings: 30 FPS cap, sun shadows and distant LOD off, cell fades off");
+}
+
 fn run_with_args(line: Vec<String>) -> AppExit {
     let mut line = with_default_mode(line);
     if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(std::path::Path::to_path_buf)) {
@@ -1667,6 +1740,11 @@ fn run_with_args(line: Vec<String>) -> AppExit {
     }
     sky_state.load_plugin_inis(&game.vfs);
     sky_state.shadows = (args.sun_shadows.is_some() || (args.play && !args.no_sun_shadows)) && args.shadow_distance > 0.0;
+    // Disable the sun shadow-map pass in the Android performance baseline.
+    #[cfg(target_os = "android")]
+    {
+        sky_state.shadows = false;
+    }
     let performance_shadows = args.sun_shadows == Some(shadow_rate::SunShadowMode::Performance);
     if performance_shadows {
         sky_state.shadow_layout = sky::CascadeLayout::Performance;
@@ -1865,6 +1943,33 @@ fn run_with_args(line: Vec<String>) -> AppExit {
         graphics.ambient_occlusion = true;
         graphics.ambient_occlusion_level = level;
     }
+    // Android low-GPU baseline: skip expensive optional full-screen and reflection passes.
+    #[cfg(target_os = "android")]
+    {
+        graphics.ambient_occlusion = false;
+        graphics.fine_shadows = false;
+        graphics.bloom = false;
+        graphics.glow = false;
+        graphics.eye_adaptation = false;
+        graphics.neon_glow = false;
+        graphics.sharpen = false;
+        graphics.anisotropic = false;
+        graphics.screen_aa = graphics::ScreenAa::Off;
+        graphics.light_shafts = false;
+        graphics.water_reflections = false;
+        graphics.water_effects = false;
+        graphics.water_mirror = false;
+        graphics.shadow_filter = bevy::light::ShadowFilteringMethod::Hardware2x2;
+        graphics.cloud_shadows = false;
+        graphics.terrain_shadows = false;
+        graphics.volumetric_clouds = false;
+        graphics.volumetric_light = false;
+        graphics.aerial_perspective = false;
+        graphics.night_sky_detail = false;
+        graphics.distant_lights = false;
+        graphics.distant_objects = crate::distant_objects::DistantObjects::Off;
+        graphics.full_detail = crate::full_detail::FullDetail::Off;
+    }
     let frame_times = match (args.log_frame_times, args.graphics_cycle.as_deref()) {
         (None, _) => None,
         (Some(every), cycle) => {
@@ -1878,6 +1983,15 @@ fn run_with_args(line: Vec<String>) -> AppExit {
             Some(graphics::FrameTimes { every, cycle })
         }
     };
+    // Android performance investigation: collect frame, physics and available GPU-pass
+    // timings automatically. The normal launcher does not expose CLI test arguments, so
+    // relying on --log-frame-times would leave Android builds without useful measurements.
+    // Keep the interval modest and do not cycle graphics settings during ordinary play.
+    #[cfg(target_os = "android")]
+    let frame_times = frame_times.or_else(|| {
+        info!("Android performance diagnostics enabled (5-second frame-time reports)");
+        Some(graphics::FrameTimes { every: 5.0, cycle: Vec::new() })
+    });
     let mut app = App::new();
     // A command for an entity that is gone is logged, not fatal (stray_commands.rs).
     app.set_error_handler(stray_commands::handler);
@@ -2608,6 +2722,11 @@ fn run_with_args(line: Vec<String>) -> AppExit {
     }
     if play.is_some() {
         settings::register(&mut app);
+        #[cfg(target_os = "android")]
+        app.add_systems(
+            PostStartup,
+            apply_android_performance_policy.after(nvf_play::settings::apply_stored),
+        );
         dlss_download::add(&mut app);
         quality_probe::register(&mut app);
         console_toggles::register(&mut app);
@@ -3081,7 +3200,7 @@ struct AnimCost {
 fn advance_animations(
     time: Res<Time>,
     // A full-detail ring copy's idle stays still while its cell is hidden (full_detail.rs).
-    playing: Query<&mut nvf_assets::anim_play::Playing, Without<full_detail::RingDormant>>,
+    playing: Query<(&mut nvf_assets::anim_play::Playing, Option<&InheritedVisibility>), Without<full_detail::RingDormant>>,
     transforms: Query<&mut Transform>,
     visibility: Query<&mut Visibility>,
     mut cost: ResMut<AnimCost>,

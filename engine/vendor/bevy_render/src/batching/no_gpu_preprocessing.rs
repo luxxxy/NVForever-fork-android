@@ -85,7 +85,11 @@ pub fn batch_and_prepare_sorted_render_phase<I, GBD>(
     let system_param_item = param.into_inner();
 
     // We only process CPU-built batch data in this function.
+    // Reserve once from the phase sizes instead of allowing the instance byte
+    // vector to grow incrementally while each item is prepared.
+    let expected_instances = phases.values().map(|phase| phase.items.len()).sum();
     let batched_instance_buffer = batched_instance_buffer.into_inner();
+    batched_instance_buffer.reserve_internal(expected_instances);
 
     for phase in phases.values_mut() {
         super::batch_and_prepare_sorted_render_phase::<I, GBD>(phase, |item| {
@@ -113,8 +117,24 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
     BPI: BinnedPhaseItem,
     GFBD: GetFullBatchData,
 {
-    let gpu_array_buffer = gpu_array_buffer.into_inner();
     let system_param_item = param.into_inner();
+    let expected_instances = phases
+        .values()
+        .map(|phase| {
+            phase
+                .batchable_meshes
+                .values()
+                .map(|bin| bin.entities().len())
+                .sum::<usize>()
+                + phase
+                    .unbatchable_meshes
+                    .values()
+                    .map(|bin| bin.entities.len())
+                    .sum::<usize>()
+        })
+        .sum();
+    let gpu_array_buffer = gpu_array_buffer.into_inner();
+    gpu_array_buffer.reserve_internal(expected_instances);
 
     for phase in phases.values_mut() {
         // Prepare batchables.

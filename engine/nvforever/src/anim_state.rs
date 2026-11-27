@@ -81,6 +81,37 @@ struct AnimStats {
     again: u32,
 }
 
+#[derive(Default)]
+struct AnimScratch {
+    told: HashSet<u32>,
+    throw_began: Option<(f32, bool)>,
+    told_info: HashSet<String>,
+    clip_paths: HashMap<String, (String, String)>,
+    now: HashSet<u32>,
+    updates: Vec<(FormId, AnimState)>,
+    new_info: Vec<(String, SequenceInfo)>,
+    gone_list: Vec<u32>,
+}
+
+impl AnimScratch {
+    fn clip_path(&mut self, path: &str, clip: &nvf_assets::anim_play::Clip) -> String {
+        cached_clip_path(path, clip, &mut self.clip_paths, &mut self.told_info, &mut self.new_info)
+    }
+
+    fn collect_gone(&mut self) {
+        for &actor in &self.told {
+            if !self.now.contains(&actor) {
+                self.gone_list.push(actor);
+            }
+        }
+    }
+
+    fn finish_frame(&mut self) {
+        std::mem::swap(&mut self.told, &mut self.now);
+        self.now.clear();
+    }
+}
+
 /// At most this many "no longer told" and "told again" lines are logged [engineering
 /// choice: a cell change forgets every actor of the cell].
 const LOGGED_CHANGES: u32 = 40;
@@ -168,6 +199,29 @@ fn sequence_info_of(clip: &nvf_assets::anim_play::Clip) -> SequenceInfo {
     }
 }
 
+/// Return the kNVSE-relative clip path while caching its normalized and case-folded
+/// forms. The actor animation system runs every frame; rebuilding these strings for every
+/// visible actor was avoidable allocator and hashing work.
+fn cached_clip_path(
+    path: &str,
+    clip: &nvf_assets::anim_play::Clip,
+    paths: &mut HashMap<String, (String, String)>,
+    told_info: &mut HashSet<String>,
+    new_info: &mut Vec<(String, SequenceInfo)>,
+) -> String {
+    if !paths.contains_key(path) {
+        let relative = strip_meshes(path);
+        let folded = relative.to_ascii_lowercase();
+        paths.insert(path.to_owned(), (relative, folded));
+    }
+    let (relative, folded) = paths.get(path).expect("clip path was just cached");
+    if !folded.is_empty() && !told_info.contains(folded) {
+        told_info.insert(folded.clone());
+        new_info.push((relative.clone(), sequence_info_of(clip)));
+    }
+    relative.clone()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn tell(
     time: Res<Time>,
@@ -181,16 +235,17 @@ fn tell(
     player_idles: Option<Res<PlayerIdles>>,
     body: Option<Res<crate::player_body::PlayerBody>>,
     mut stats: ResMut<AnimStats>,
-    mut told: Local<HashSet<u32>>,
-    mut throw_began: Local<Option<(f32, bool)>>,
-    mut told_info: Local<HashSet<String>>,
+    mut scratch: Local<AnimScratch>,
 ) {
     let Some(rt) = script.as_deref_mut().and_then(|s| s.rt.as_mut()) else { return };
     let dt = time.delta_secs().min(0.1);
     let clock = time.elapsed_secs();
-    let mut now = HashSet::new();
-    let mut updates: Vec<(FormId, AnimState)> = Vec::new();
-    let mut new_info: Vec<(String, SequenceInfo)> = Vec::new();
+    // Reuse per-system scratch storage. This system runs every frame and can visit many
+    // actors; fresh HashSets and Vecs here otherwise allocate/free on every update.
+    scratch.now.clear();
+    scratch.updates.clear();
+    scratch.new_info.clear();
+    scratch.gone_list.clear();
     for (rig, vis, lo, hold, pose, idle, flinch, dying) in &actors {
         if rig.reference == FormId::PLAYER_REF.0 || !vis.get() || dying {
             continue;
@@ -225,23 +280,18 @@ fn tell(
         // The clip its body plays, without the `meshes\` its path starts with (kNVSE's
         // sequence paths are under meshes).
         let clip = lo.and_then(|l| l.set.clips.get(&l.blend.cur.mv)).map(|c| {
-            let rel = strip_meshes(&c.path);
-            let k = rel.to_ascii_lowercase();
-            if !k.is_empty() && told_info.insert(k) {
-                new_info.push((rel.clone(), sequence_info_of(&c.bound.clip)));
-            }
-            rel
+            scratch.clip_path(&c.path, &c.bound.clip)
         });
         let st = AnimState { action, moving, group, iron_sights: false, throwing: false, mine: false, forced_hit, at: 0.0, clip };
-        if !told.contains(&rig.reference) && stats.actors.contains(&rig.reference) {
+        if !scratch.told.contains(&rig.reference) && stats.actors.contains(&rig.reference) {
             stats.again += 1;
             if stats.again <= LOGGED_CHANGES {
                 info!("anim state: {:08X} told again: group {}, way {}, action {}", rig.reference, st.group.unwrap_or("none"), st.moving.code(), st.action.map_or(-1, AnimAction::code));
             }
         }
         stats.note(rig.reference, &st);
-        updates.push((FormId(rig.reference), st));
-        now.insert(rig.reference);
+        scratch.updates.push((FormId(rig.reference), st));
+        scratch.now.insert(rig.reference);
     }
     // The player.
     let (trigger, aiming, walk) = (control.as_deref().is_some_and(|c| c.trigger), control.as_deref().is_some_and(|c| c.aiming), intent.as_deref().is_some_and(|i| i.walk));
@@ -261,43 +311,38 @@ fn tell(
     let landing = body.as_deref().is_some_and(|b| b.landing()).then_some(AnimAction::WaitForSpecialIdle);
     // IsPlayerActionActive 2 from a throw's first frame of 5 (`THROW_ACTION_SECONDS`).
     let winding = weapon_action == Some(AnimAction::ThrowWindUp);
-    let was_winding = throw_began.is_some_and(|(_, w)| w);
-    let began = match *throw_began {
+    let was_winding = scratch.throw_began.is_some_and(|(_, w)| w);
+    let began = match scratch.throw_began {
         Some((t, _)) if !winding || was_winding => t,
         _ if winding => clock,
         _ => f32::NEG_INFINITY,
     };
-    *throw_began = Some((began, winding));
+    scratch.throw_began = Some((began, winding));
     let throwing = clock - began < fnv_game::anim_state::THROW_ACTION_SECONDS;
     // IsPlayerActionActive 4 instead of 2 for a mine (a land mine or mine drop weapon).
     let mine = throwing && combat.as_deref().is_some_and(|c| c.player_weapon_is_mine());
     let first_person = control.as_deref().is_none_or(|c| !c.third_person_view());
     let player_clip = body.as_deref().and_then(|b| b.active_clip(first_person)).map(|(path, clip)| {
-        let rel = strip_meshes(path);
-        let k = rel.to_ascii_lowercase();
-        if !k.is_empty() && told_info.insert(k) {
-            new_info.push((rel.clone(), sequence_info_of(clip)));
-        }
-        rel
+        scratch.clip_path(path, clip)
     });
     let st = AnimState { action: weapon_action.or(idle_action).or(landing), moving, group: Some(group(moving, !walk)), iron_sights, throwing, mine, forced_hit: false, at: 0.0, clip: player_clip };
     stats.note(FormId::PLAYER_REF.0, &st);
-    updates.push((FormId::PLAYER_REF, st));
-    let gone_list: Vec<u32> = told.difference(&now).copied().collect();
-    for &gone in &gone_list {
+    scratch.updates.push((FormId::PLAYER_REF, st));
+    scratch.collect_gone();
+    for &gone in &scratch.gone_list {
         stats.forgotten += 1;
         if stats.forgotten <= LOGGED_CHANGES {
             info!("anim state: {gone:08X} no longer told (not drawn, hidden or dying)");
         }
     }
-    let apply = |g: &mut fnv_game::game::Game<'_>| {
-        for (path, info) in new_info {
+    let mut apply = |g: &mut fnv_game::game::Game<'_>| {
+        for (path, info) in scratch.new_info.drain(..) {
             g.set_sequence_info(&path, info);
         }
-        for (actor, st) in updates {
+        for (actor, st) in scratch.updates.drain(..) {
             g.set_anim_state(actor, st);
         }
-        for gone in gone_list {
+        for gone in scratch.gone_list.drain(..) {
             g.forget_anim_state(FormId(gone));
         }
     };
@@ -306,7 +351,10 @@ fn tell(
     } else {
         apply(&mut rt.game);
     }
-    *told = now;
+    // Swap the current visible set with the previous frame's set, retaining both
+    // allocations for reuse on the next update.
+    drop(apply);
+    scratch.finish_frame();
 }
 
 #[cfg(test)]

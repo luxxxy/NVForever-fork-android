@@ -1042,6 +1042,7 @@ type ActorAnimParts = (
     Option<&'static mut crate::creature_stance::CreatureStance>,
     Option<&'static Name>,
     Option<&'static crate::talk_clips::TalkClip>,
+    Option<&'static InheritedVisibility>,
 );
 
 /// Actors posed in one task of [`drive`] on the compute pool.
@@ -1062,22 +1063,30 @@ pub fn drive(
 ) {
     let t0 = std::time::Instant::now();
     let (dt, now) = (time.delta_secs(), time.elapsed_secs());
-    let mut items: Vec<_> = actors.iter_mut().collect();
-    // A dead actor's pose stands only while nothing else wrote its bones
-    // (`BlendPlayer::pose_held`): asked here, before anything is written.
-    let written: Vec<bool> = items.iter().map(|it| it.3.is_some() && it.1.written_since(&mut transforms)).collect();
-    let mut jobs: Vec<(_, bool)> = items.iter_mut().zip(written).collect();
-    let one_chunk = |chunk: &mut [(&mut ActorAnimItem, bool)]| {
+    // Collect query items and their dead-pose write state together. The previous
+    // items -> written -> jobs pipeline allocated three frame-sized vectors; only the
+    // final job vector is needed by the parallel chunk mapper.
+    let mut jobs = Vec::new();
+    for item in actors.iter_mut() {
+        // Ask before any transforms are written this frame.
+        let written = item.3.is_some() && item.1.written_since(&mut transforms);
+        // Inherited-hidden actors still advance their gameplay/animation clocks below,
+        // but their skeleton tracks cannot contribute pixels until they become visible.
+        let pose_visible = item.11.is_none_or(|visible| visible.get());
+        jobs.push((item, written, pose_visible));
+    }
+    let one_chunk = |chunk: &mut [(ActorAnimItem<'_, '_>, bool, bool)]| {
         let mut c = ActorAnimCost::default();
         let (mut scratch, mut out) = (Vec::new(), Vec::new());
-        for (item, written) in chunk.iter_mut() {
-            drive_one(item, *written, dt, now, &mut scratch, &mut out, &mut c);
+        for (item, written, pose_visible) in chunk.iter_mut() {
+            drive_one(item, *written, *pose_visible, (dt, now), &mut scratch, &mut out, &mut c);
         }
         (c, out)
     };
-    let parts = if jobs.len() <= DRIVE_CHUNK { vec![one_chunk(&mut jobs)] } else { jobs.par_chunk_map_mut(ComputeTaskPool::get(), DRIVE_CHUNK, |_, chunk| one_chunk(chunk)) };
     let mut n = 0;
-    for (c, out) in parts {
+    if jobs.len() <= DRIVE_CHUNK {
+        // Avoid allocating a one-element Vec just to carry the serial result.
+        let (c, out) = one_chunk(&mut jobs);
         for (e, tr) in out {
             if let Ok(mut t) = transforms.get_mut(e) {
                 t.set_if_neq(tr);
@@ -1085,6 +1094,17 @@ pub fn drive(
         }
         n += c.actor_frames as usize;
         cost.absorb(&c);
+    } else {
+        let parts = jobs.par_chunk_map_mut(ComputeTaskPool::get(), DRIVE_CHUNK, |_, chunk| one_chunk(chunk));
+        for (c, out) in parts {
+            for (e, tr) in out {
+                if let Ok(mut t) = transforms.get_mut(e) {
+                    t.set_if_neq(tr);
+                }
+            }
+            n += c.actor_frames as usize;
+            cost.absorb(&c);
+        }
     }
     cost.total += t0.elapsed();
     cost.frames += 1;
@@ -1097,8 +1117,9 @@ type ActorAnimItem<'w, 's> = bevy::ecs::query::QueryItem<'w, 's, ActorAnimParts>
 /// One actor of [`drive`]: its clips chosen and blended and its bones sampled into
 /// `out` (written by the caller); `written` is [`BlendPlayer::written_since`] for a dead
 /// one. Only the actor's own components are touched.
-fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, dt: f32, now: f32, scratch: &mut Vec<(usize, Transform)>, out: &mut Vec<(Entity, Transform)>, cost: &mut ActorAnimCost) {
-    let (lo, player, weapon, dying, flinch, seated, idle, pose, creature, name, talk) = item;
+fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, pose_visible: bool, timing: (f32, f32), scratch: &mut Vec<(usize, Transform)>, out: &mut Vec<(Entity, Transform)>, cost: &mut ActorAnimCost) {
+    let (dt, now) = timing;
+    let (lo, player, weapon, dying, flinch, seated, idle, pose, creature, name, talk, _) = item;
     let (flinch, seated, idle, name, talk) = (*flinch, *seated, *idle, *name, *talk);
     // Set below for a standing actor's idle only.
     player.over_movement = 0;
@@ -1127,17 +1148,19 @@ fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, dt: f32, now: f32,
         }
         // The layers stay on the player for those who read them (`actor_materials`,
         // `anim_sounds`); the bones are sampled only if that makes a different pose.
-        match player.sample_held_into(written, scratch, out) {
-            None => {
-                cost.held_frames += 1;
-                cost.finished_held_frames += u64::from(finished);
-                cost.held_time += dead_t0.elapsed();
-            }
-            Some(tracks) => {
-                cost.tracks += tracks as u64;
-                cost.dead_tracks += tracks as u64;
-                cost.finished_sampled_frames += u64::from(finished);
-                cost.actor_frames += 1;
+        if pose_visible {
+            match player.sample_held_into(written, scratch, out) {
+                None => {
+                    cost.held_frames += 1;
+                    cost.finished_held_frames += u64::from(finished);
+                    cost.held_time += dead_t0.elapsed();
+                }
+                Some(tracks) => {
+                    cost.tracks += tracks as u64;
+                    cost.dead_tracks += tracks as u64;
+                    cost.finished_sampled_frames += u64::from(finished);
+                    cost.actor_frames += 1;
+                }
             }
         }
         return;
@@ -1157,8 +1180,10 @@ fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, dt: f32, now: f32,
         if let Some(i) = idle {
             i.layers(player);
         }
-        cost.tracks += player.sample_into(scratch, out) as u64;
-        cost.actor_frames += 1;
+        if pose_visible {
+            cost.tracks += player.sample_into(scratch, out) as u64;
+            cost.actor_frames += 1;
+        }
         return;
     }
     if !lo.hold {
@@ -1253,8 +1278,10 @@ fn drive_one(item: &mut ActorAnimItem<'_, '_>, written: bool, dt: f32, now: f32,
     let layers = player.layers.iter().flatten().count() as u64 + u64::from(under);
     cost.layer_frames += layers;
     cost.blend_frames += u64::from(layers > 1);
-    cost.tracks += player.sample_into(scratch, out) as u64;
-    cost.actor_frames += 1;
+    if pose_visible {
+        cost.tracks += player.sample_into(scratch, out) as u64;
+        cost.actor_frames += 1;
+    }
 }
 
 impl ActorAnimCost {

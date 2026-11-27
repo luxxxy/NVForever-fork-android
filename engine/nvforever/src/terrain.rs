@@ -1468,6 +1468,38 @@ fn across(q: u8, side: usize) -> (Option<usize>, u8) {
     }
 }
 
+/// A layer mesh shares the base quadrant's vertex attributes. Only its opacity and
+/// triangle list differ, so do not resample the LAND surface for every painted layer.
+fn layer_mesh_from_base(mut mesh: Mesh, alpha: &[f32]) -> Option<Mesh> {
+    use bevy::mesh::VertexAttributeValues;
+    let side = (alpha.len() as f64).sqrt() as usize;
+    if side * side != alpha.len() || side < 2 {
+        return None;
+    }
+    let mut indices = Vec::with_capacity((side - 1) * (side - 1) * 6);
+    for r in 0..side - 1 {
+        for c in 0..side - 1 {
+            let i = (r * side + c) as u32;
+            let (e, nn, ne) = (i + 1, i + side as u32, i + side as u32 + 1);
+            for tri in [[i, e, ne], [i, ne, nn]] {
+                if tri.iter().any(|&v| alpha[v as usize] > 0.0) {
+                    indices.extend_from_slice(&tri);
+                }
+            }
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+    if let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
+        for (colour, &opacity) in colours.iter_mut().zip(alpha) {
+            colour[3] = opacity;
+        }
+    }
+    mesh.insert_indices(Indices::U32(indices));
+    Some(mesh)
+}
+
 /// The base mesh of quadrant `q` with the opacities of its first layers (`alphas`, at most
 /// [`folded_layers`], in the layers' order, on the mesh's vertices: [`refine_quad`]) at each vertex, where terrain.wesl reads them:
 /// the first in the vertex colour's alpha, the second and third in the second texture
@@ -1479,12 +1511,12 @@ fn folded_mesh(land: &Land, surface: &Surface, q: u8, alphas: &[&[f32]], cell_or
     folded_mesh_drawn(land, surface, q, QuadrantDraw::FULL, alphas, cell_origin, tile)
 }
 
-/// [`folded_mesh`] drawn as `draw` says ([`quadrant_mesh_drawn`]).
-fn folded_mesh_drawn(land: &Land, surface: &Surface, q: u8, draw: QuadrantDraw, alphas: &[&[f32]], cell_origin: Vec2, tile: f32) -> Option<Mesh> {
+/// Apply the folded layer data to an already-built base mesh. The shared vertex attributes
+/// are copied once from the base instead of rebuilding and resampling the surface.
+fn folded_mesh_from_base(mut mesh: Mesh, alphas: &[&[f32]], tile: f32) -> Mesh {
     use bevy::mesh::VertexAttributeValues;
-    let mut mesh = quadrant_mesh_drawn(land, surface, q, draw, None, cell_origin, tile)?;
     let at = |k: usize, v: usize| alphas.get(k).map_or(0.0, |a| a[v]);
-    let n = quad_side(drawn_sub(surface, draw)).pow(2);
+    let n = alphas.first().map_or(0, |a| a.len());
     if let Some(VertexAttributeValues::Float32x4(col)) = mesh.attribute_mut(Mesh::ATTRIBUTE_COLOR) {
         for (v, c) in col.iter_mut().enumerate() {
             c[3] = at(0, v);
@@ -1499,7 +1531,14 @@ fn folded_mesh_drawn(land: &Land, surface: &Surface, q: u8, draw: QuadrantDraw, 
     if folded_layers(tile) == FOLDED_LAYERS {
         mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, (0..n).map(|v| [at(4, v), at(5, v)]).collect::<Vec<_>>());
     }
-    Some(mesh)
+    mesh
+}
+
+/// [`folded_mesh`] drawn as `draw` says ([`quadrant_mesh_drawn`]).
+#[cfg(test)]
+fn folded_mesh_drawn(land: &Land, surface: &Surface, q: u8, draw: QuadrantDraw, alphas: &[&[f32]], cell_origin: Vec2, tile: f32) -> Option<Mesh> {
+    let mesh = quadrant_mesh_drawn(land, surface, q, draw, None, cell_origin, tile)?;
+    Some(folded_mesh_from_base(mesh, alphas, tile))
 }
 
 /// A layer's opacity over the 17 × 17 grid.
@@ -1608,16 +1647,23 @@ pub struct QuadMeshes {
 pub fn build_quadrant(land: &Land, surface: &Surface, layers: &[Layer], q: u8, draw: QuadrantDraw, origin: Vec2, tile: f32) -> QuadMeshes {
     let mut out = QuadMeshes { base: quadrant_mesh_drawn(land, surface, q, draw, None, origin, tile), ..default() };
     let quad = quadrant_layers(layers, q);
+    if quad.is_empty() {
+        return out;
+    }
     let sub = drawn_sub(surface, draw);
     let alphas: Vec<Vec<f32>> = quad.iter().map(|(_, l)| refine_quad(&alpha_grid(l), sub)).collect();
-    for ((i, _), alpha) in quad.iter().zip(&alphas) {
-        if let Some(mesh) = quadrant_mesh_drawn(land, surface, q, draw, Some(alpha), origin, tile) {
-            out.layers.insert(*i, mesh);
+    if let Some(base) = out.base.as_ref() {
+        // All draws use identical positions, normals, tangents and UVs. Build those once;
+        // layer copies only change vertex alpha and discard wholly transparent triangles.
+        for ((i, _), alpha) in quad.iter().zip(&alphas) {
+            if let Some(mesh) = layer_mesh_from_base(base.clone(), alpha) {
+                out.layers.insert(*i, mesh);
+            }
         }
-    }
-    if !alphas.is_empty() {
         let first: Vec<&[f32]> = alphas.iter().take(folded_layers(tile)).map(Vec::as_slice).collect();
-        out.folded = folded_mesh_drawn(land, surface, q, draw, &first, origin, tile);
+        if !first.is_empty() {
+            out.folded = Some(folded_mesh_from_base(base.clone(), &first, tile));
+        }
     }
     out
 }
@@ -3671,6 +3717,50 @@ mod tests {
                     }
                     let (Some(V::Float32x4(a)), Some(V::Float32x4(b))) = (copy.attribute(Mesh::ATTRIBUTE_TANGENT), stored_mesh.attribute(Mesh::ATTRIBUTE_TANGENT)) else { panic!() };
                     assert!(a.iter().zip(b).all(|(x, y)| (x[3] - y[3]).abs() < 1e-6), "{subdiv} {draw:?} q{q}: the tangent's fourth number");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shared_quadrant_geometry_matches_independently_built_layer_meshes() {
+        let land = sloped_land();
+        let patterns = [
+            vec![0.0; QUAD_SIDE * QUAD_SIDE],
+            (0..QUAD_SIDE * QUAD_SIDE).map(|i| if i % 7 == 0 { 0.35 } else { 0.0 }).collect(),
+            (0..QUAD_SIDE * QUAD_SIDE).map(|i| (i % 5) as f32 * 0.25).collect(),
+        ];
+        let draws = [
+            QuadrantDraw::FULL,
+            QuadrantDraw::HALF,
+            QuadrantDraw { step: 1, coarse: [true, false, true, false] },
+        ];
+        for draw in draws {
+            let surface = smoothed_with(&land, fnv_world::land_surface::SmoothParams { subdiv: 4, ..Default::default() });
+            let sub = drawn_sub(&surface, draw);
+            for alpha in &patterns {
+                let refined = refine_quad(alpha, sub);
+                for q in 0..4u8 {
+                    let base = quadrant_mesh_drawn(&land, &surface, q, draw, None, Vec2::ZERO, 256.0).unwrap();
+                    let shared = layer_mesh_from_base(base.clone(), &refined);
+                    let direct = quadrant_mesh_drawn(&land, &surface, q, draw, Some(&refined), Vec2::ZERO, 256.0);
+                    match (shared, direct) {
+                        (None, None) => {}
+                        (Some(a), Some(b)) => {
+                            assert_eq!(triangles(&a), triangles(&b), "q{q} {draw:?}");
+                            for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0, Mesh::ATTRIBUTE_TANGENT, Mesh::ATTRIBUTE_COLOR] {
+                                assert_eq!(a.attribute(attribute), b.attribute(attribute), "q{q} {draw:?}: {attribute:?}");
+                            }
+                        }
+                        _ => panic!("shared and direct layer construction disagree: q{q} {draw:?}"),
+                    }
+                    let packed: Vec<&[f32]> = (0..folded_layers(256.0)).map(|_| refined.as_slice()).collect();
+                    let shared_folded = folded_mesh_from_base(base.clone(), &packed, 256.0);
+                    let direct_folded = folded_mesh_drawn(&land, &surface, q, draw, &packed, Vec2::ZERO, 256.0).unwrap();
+                    assert_eq!(triangles(&shared_folded), triangles(&direct_folded), "folded q{q} {draw:?}");
+                    for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0, Mesh::ATTRIBUTE_UV_1, Mesh::ATTRIBUTE_TANGENT, Mesh::ATTRIBUTE_COLOR] {
+                        assert_eq!(shared_folded.attribute(attribute), direct_folded.attribute(attribute), "folded q{q} {draw:?}: {attribute:?}");
+                    }
                 }
             }
         }

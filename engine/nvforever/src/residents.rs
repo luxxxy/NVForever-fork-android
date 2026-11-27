@@ -1252,6 +1252,8 @@ struct Core {
     /// ghoul's roar, the gecko's hiss) this frame: they stand until it ends, as a
     /// staggering actor does (#2686: an alerted ghoul slid across the floor roaring).
     drawing: HashSet<u32>,
+    /// Reused next-frame set, swapped with `drawing` after comparing the two.
+    drawing_next: HashSet<u32>,
     /// Of those, the ones whose idle carries the body away from the reference
     /// (`idles::IdleHolds::carried_off`): they are drawn facing as they did when it began.
     carried_off: HashSet<u32>,
@@ -1534,6 +1536,7 @@ impl Residents {
             staggering: HashSet::new(),
             posed: HashSet::new(),
             drawing: HashSet::new(),
+            drawing_next: HashSet::new(),
             carried_off: HashSet::new(),
             breaking: HashSet::new(),
             travel: HashMap::new(),
@@ -3316,6 +3319,12 @@ type Held<'w, 's> = (
     Query<'w, 's, (&'static RefVisual, &'static crate::creature_stance::CreatureStance), Without<crate::locomotion::Dying>>,
 );
 
+/// Replace a per-frame membership set while retaining its allocated buckets.
+fn refill_set<T: Copy + Eq + std::hash::Hash>(set: &mut HashSet<T>, values: impl IntoIterator<Item = T>) {
+    set.clear();
+    set.extend(values);
+}
+
 /// Run the package choice and the walks, log what happens, keep the visuals in step.
 #[allow(clippy::too_many_arguments)]
 pub fn drive(
@@ -3381,17 +3390,25 @@ pub fn drive(
     let starting = screen.as_deref().is_some_and(|l| l.starting());
     let all = res.all;
     // Who staggers (a hit reaction playing) stands until it ends.
-    res.core.on_furniture = seated.iter().map(|v| v.0).collect();
-    res.core.staggering = flinches.iter().filter(|(_, f)| now < f.at + f.clip.clip.length()).map(|(v, _)| v.0).collect();
-    // So does a creature drawing its stance (#2686), from the frame before.
-    let drawing: HashSet<u32> = stances.iter().filter(|(_, s)| s.holds_in_place()).map(|(v, _)| v.0).collect();
-    for id in drawing.difference(&res.core.drawing) {
+    // Refill the per-frame actor sets in place so their hash tables keep their buckets.
+    refill_set(&mut res.core.on_furniture, seated.iter().map(|v| v.0));
+    refill_set(
+        &mut res.core.staggering,
+        flinches.iter().filter(|(_, f)| now < f.at + f.clip.clip.length()).map(|(v, _)| v.0),
+    );
+    // So does a creature drawing its stance (#2686), from the frame before. Keep a second
+    // reusable set so transitions can be compared without allocating a new HashSet.
+    refill_set(
+        &mut res.core.drawing_next,
+        stances.iter().filter(|(_, s)| s.holds_in_place()).map(|(v, _)| v.0),
+    );
+    for id in res.core.drawing_next.difference(&res.core.drawing) {
         info!("actor {id:08X} holds still while it draws its stance");
     }
-    for id in res.core.drawing.difference(&drawing) {
+    for id in res.core.drawing.difference(&res.core.drawing_next) {
         info!("actor {id:08X} drew its stance: free to move");
     }
-    res.core.drawing = drawing;
+    std::mem::swap(&mut res.core.drawing, &mut res.core.drawing_next);
     // How far attack clips carry actors (`attack_anims.rs`), from the frame before.
     if let Some(t) = travel.as_deref_mut() {
         res.core.travel = t.take();
@@ -3405,8 +3422,8 @@ pub fn drive(
     match idle_holds {
         Some(mut h) => {
             h.breaking = std::mem::take(&mut res.core.breaking);
-            res.core.posed = h.held.clone();
-            res.core.carried_off = h.carried_off.clone();
+            res.core.posed.clone_from(&h.held);
+            res.core.carried_off.clone_from(&h.carried_off);
         }
         None => {
             res.core.posed.clear();
@@ -3511,13 +3528,12 @@ pub fn drive(
     if nav.travellers.is_empty() {
         nav.lead = core.list.first().and_then(|r| core.ai.agents.get(&r.actor)).map(|a| Lead { space: a.walker.space, feet: a.walker.feet, heading: a.walker.heading });
     }
-    let on_furniture: HashSet<u32> = seated.iter().map(|v| v.0).collect();
     // Above 60 fps a frame gets the same share of itself (stream_pace.rs).
     let mut budget = pace.count(SPAWNS_PER_FRAME);
     let _span = info_span!("ai::draw_and_place").entered();
     for r in core.list.iter_mut().filter(|r| r.joined && !r.failed) {
         // Furniture: sit once drawn; get up before leaving.
-        let on = on_furniture.contains(&r.actor.0);
+        let on = core.on_furniture.contains(&r.actor.0);
         let entity = r.root.filter(|_| r.spawned);
         let wants = r.wants;
         let restart = std::mem::take(&mut r.restart);
@@ -4059,6 +4075,16 @@ mod tests {
 
     /// #3341: the last stretch's skip lets a fighter go back to physics; a stuck one's
     /// holds it, fighting or not, and every skip ends at its time.
+    #[test]
+    fn refill_set_replaces_membership_and_retains_capacity() {
+        let mut set = HashSet::with_capacity(32);
+        set.extend(0_u32..24);
+        let capacity = set.capacity();
+        super::refill_set(&mut set, [3, 5, 8]);
+        assert_eq!(set, HashSet::from([3, 5, 8]));
+        assert!(set.capacity() >= capacity);
+    }
+
     #[test]
     fn a_last_stretch_skip_does_not_hold_a_fighter() {
         let stretch = Skip { until: 4.0, last_stretch: true };

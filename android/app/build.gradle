@@ -1,8 +1,6 @@
 plugins { id 'com.android.application' }
 
-// Monotonic Android versionCode for downgrade protection: explicit NVF_ANDROID_VERSION_CODE
-// or -PnvfAndroidVersionCode wins; otherwise derive from versionName
-// (major*10_000_000 + minor*100_000 + patch*1_000 + androidRevision).
+// Monotonic Android versionCode for downgrade protection.
 def resolvedVersionName = providers.environmentVariable('NVF_ANDROID_VERSION_NAME')
     .orElse(providers.gradleProperty('nvfAndroidVersionName'))
     .getOrElse('0.7.0-android-r10')
@@ -11,20 +9,31 @@ def explicitVersionCode = providers.environmentVariable('NVF_ANDROID_VERSION_COD
     .orNull
 def deriveVersionCode = { String name ->
     def m = (name =~ /^v?(\d+)\.(\d+)\.(\d+)(?:-android-r(\d+))?/)
-    if (!m.find()) {
-        throw new GradleException("Cannot derive monotonic versionCode from versionName '${name}'; set NVF_ANDROID_VERSION_CODE")
-    }
+    if (!m.find()) throw new GradleException("Cannot derive monotonic versionCode from versionName '${name}'; set NVF_ANDROID_VERSION_CODE")
     int major = m.group(1) as int
     int minor = m.group(2) as int
     int patch = m.group(3) as int
     int rev = m.group(4) ? (m.group(4) as int) : 0
     return major * 10000000 + minor * 100000 + patch * 1000 + rev
 }
-def resolvedVersionCode = explicitVersionCode != null
-    ? (explicitVersionCode as int)
-    : deriveVersionCode(resolvedVersionName)
-if (resolvedVersionCode <= 1) {
-    throw new GradleException("Android versionCode must be > 1 (got ${resolvedVersionCode})")
+def resolvedVersionCode = explicitVersionCode != null ? (explicitVersionCode as int) : deriveVersionCode(resolvedVersionName)
+if (resolvedVersionCode <= 1) throw new GradleException("Android versionCode must be > 1 (got ${resolvedVersionCode})")
+
+// The original Preview signing key is supplied only by the CI secret store.
+// Local builds and fork PRs without secrets keep the normal Android debug key.
+def signingEnv = [
+    storeFile: providers.environmentVariable('NVF_ANDROID_KEYSTORE_PATH').orNull,
+    storePassword: providers.environmentVariable('NVF_ANDROID_KEYSTORE_PASSWORD').orNull,
+    keyAlias: providers.environmentVariable('NVF_ANDROID_KEY_ALIAS').orNull,
+    keyPassword: providers.environmentVariable('NVF_ANDROID_KEY_PASSWORD').orNull
+]
+def signingValues = signingEnv.values().findAll { it != null && !it.isBlank() }
+def hasPreviewSigning = !signingValues.isEmpty()
+if (hasPreviewSigning && signingValues.size() != signingEnv.size()) {
+    throw new GradleException('Incomplete Android Preview signing configuration; configure all four NVF_ANDROID_KEYSTORE_* / key secrets')
+}
+if (hasPreviewSigning && !file(signingEnv.storeFile).isFile()) {
+    throw new GradleException('NVF_ANDROID_KEYSTORE_PATH does not point to a readable keystore file')
 }
 
 android {
@@ -38,11 +47,29 @@ android {
         versionName resolvedVersionName
         ndk { abiFilters 'arm64-v8a' }
     }
+    if (hasPreviewSigning) {
+        signingConfigs {
+            preview {
+                storeFile file(signingEnv.storeFile)
+                storePassword signingEnv.storePassword
+                keyAlias signingEnv.keyAlias
+                keyPassword signingEnv.keyPassword
+            }
+        }
+    }
     // Only this repository's runtime data and Classic casing artwork. No game data.
     sourceSets.main.assets.srcDirs = ['../../runtime-assets']
     sourceSets.main.jniLibs.srcDirs = ['../../native-libs']
     packaging { jniLibs { useLegacyPackaging = true } }
-    buildTypes { release { minifyEnabled false } }
+    buildTypes {
+        debug {
+            if (hasPreviewSigning) signingConfig signingConfigs.preview
+        }
+        release {
+            minifyEnabled false
+            if (hasPreviewSigning) signingConfig signingConfigs.preview
+        }
+    }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
 }
 
@@ -51,7 +78,6 @@ def legalAssets = layout.buildDirectory.dir('generated/legal-assets')
 android.sourceSets.main.assets.srcDir(legalAssets)
 def stageLegalAssets = tasks.register('stageLegalAssets', Exec) {
     outputs.dir(legalAssets)
-    // Regenerate with the exact resolved native dependency graph and source revision.
     outputs.upToDateWhen { false }
     doFirst {
         def ndk = providers.environmentVariable('ANDROID_NDK_HOME').orNull
@@ -61,8 +87,6 @@ def stageLegalAssets = tasks.register('stageLegalAssets', Exec) {
             '--out', legalAssets.get().asFile
     }
     doLast {
-        // A Java-only support APK can retain an already-qualified native library pair.
-        // Its native source identity is separate from this APK's corresponding source.
         def nativeSource = providers.environmentVariable('NVF_ANDROID_NATIVE_SOURCE').orNull
         def destination = legalAssets.get().file('NATIVE-SOURCE.txt').asFile
         if (nativeSource != null) {

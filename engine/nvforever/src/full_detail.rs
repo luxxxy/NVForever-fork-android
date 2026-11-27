@@ -81,7 +81,7 @@ use fnv_esm::LoadOrder;
 use fnv_world::placed::{base_object, placement_visible_when_distant, BaseObject, Placement};
 use fnv_world::CELL_SIZE;
 use nvf_assets::model::ModelCtx;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 pub type Grid = (i32, i32);
@@ -1093,16 +1093,14 @@ impl DrawnCells<'_> {
         self.ring.as_deref().map(|r| &r.cells)
     }
 
-    /// Every drawn cell with whether it is fully drawn: the loaded ones (those not
-    /// fading), then the ring's; for `blocks` (object LOD segments) without the ring cells
-    /// that keep their segment.
-    pub fn cells(&self, blocks: bool) -> Vec<(Grid, bool)> {
-        drawn_cells(self.streamer.loaded.keys().map(|c| (*c, !self.streamer.fades.contains_key(c))), self.ring(), blocks)
-    }
-
-    /// The cells fully drawn: the LOD terrain is cut out there.
-    pub fn full(&self) -> HashSet<Grid> {
-        self.cells(false).into_iter().filter(|(_, full)| *full).map(|(c, _)| c).collect()
+    /// Fill a caller-owned buffer with every drawn cell and whether it is fully drawn.
+    /// Reusing the buffer avoids allocating a new vector on every distant-LOD update.
+    pub fn cells_into(&self, blocks: bool, out: &mut Vec<(Grid, bool)>) {
+        out.clear();
+        out.extend(self.streamer.loaded.keys().map(|c| (*c, !self.streamer.fades.contains_key(c))));
+        if let Some(ring) = self.ring() {
+            out.extend(ring.iter().filter(|(_, s)| !(blocks && s.keep_segment())).map(|(c, s)| (*c, s.full())));
+        }
     }
 
     /// How much of cell `c` is drawn for its LOD segment's crossfade: the loaded cell's
@@ -1125,6 +1123,7 @@ pub fn tree_level(loaded: f32, ring: Option<&HashMap<Grid, RingCellState>>, c: G
 }
 
 /// [`DrawnCells::cells`] from the loaded cells (cell, fully drawn) and the ring's.
+#[cfg(test)]
 pub fn drawn_cells(loaded: impl Iterator<Item = (Grid, bool)>, ring: Option<&HashMap<Grid, RingCellState>>, blocks: bool) -> Vec<(Grid, bool)> {
     let mut out: Vec<(Grid, bool)> = loaded.collect();
     out.extend(ring.into_iter().flatten().filter(|(_, s)| !(blocks && s.keep_segment())).map(|(c, s)| (*c, s.full())));

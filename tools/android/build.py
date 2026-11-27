@@ -70,6 +70,10 @@ def main() -> None:
     parser.add_argument("--jobs", type=int, default=2)
     parser.add_argument("--gradle", default="gradle")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--profile", choices=("android-dev", "release"), default="android-dev",
+                        help="Rust profile for the native library (default: android-dev)")
+    parser.add_argument("--variant", choices=("debug", "release"), default="debug",
+                        help="Gradle APK variant to package (default: debug)")
     parser.add_argument("--tests", action="store_true", help="Cross-check authored engine tests (does not execute them)")
     parser.add_argument("--gradle-build-dir", type=Path, help="Optional separate Gradle output/cache directory")
     args = parser.parse_args()
@@ -88,12 +92,13 @@ def main() -> None:
                "-p", package, "--lib", "--target", TARGET, "--locked"]
     if args.tests:
         command.append("--tests")
+    command.extend(["--features", "profile" if args.tests else "nvforever/profile"])
     if not args.check:
-        command.extend(["--profile", "android-dev"])
+        command.extend(["--profile", args.profile])
     subprocess.run(command, cwd=ROOT, env=env, check=True)
     if args.check:
         return
-    library = args.target_dir / TARGET / "android-dev/libnvf_android.so"
+    library = args.target_dir / TARGET / args.profile / "libnvf_android.so"
     libraries = ROOT / "native-libs/arm64-v8a"
     libraries.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(library, libraries / library.name)
@@ -114,9 +119,11 @@ def main() -> None:
         command.extend(["--project-cache-dir", str(args.gradle_build_dir / "project-cache")])
     # Incremental APK updates can retain an obsolete native payload outside the
     # active ZIP directory. Recreate app packaging, preserving the Rust cache.
-    command.extend([":app:clean", ":app:assembleDebug"])
+    command.extend([":app:clean", f":app:assemble{args.variant.capitalize()}"])
     subprocess.run(command, cwd=ROOT / "android", env=env, check=True)
-    print((args.gradle_build_dir / "app" if args.gradle_build_dir else ROOT / "android/app/build") / "outputs/apk/debug/app-debug.apk")
+    apk_name = "app-debug.apk" if args.variant == "debug" else "app-release-unsigned.apk"
+    print((args.gradle_build_dir / "app" if args.gradle_build_dir else ROOT / "android/app/build")
+          / "outputs" / "apk" / args.variant / apk_name)
 
 
 if __name__ == "__main__":

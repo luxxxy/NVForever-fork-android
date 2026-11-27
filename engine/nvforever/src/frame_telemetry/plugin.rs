@@ -16,6 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const CURSOR_PATHS: usize = 4_096;
+/// Require a full second of stable display settings before opening a capture.
+const SETTINGS_STABLE_UPDATES: u8 = 30;
 
 pub struct FrameTelemetryPlugin(pub PathBuf);
 
@@ -66,6 +68,7 @@ impl Plugin for FrameTelemetryPlugin {
         app.insert_resource(Telemetry {
             pending: Some(pending),
             session: None,
+            settings_stability: SettingsStability::default(),
         })
         .configure_sets(
             Update,
@@ -132,6 +135,7 @@ struct Pending {
 struct Telemetry {
     pending: Option<Pending>,
     session: Option<Session>,
+    settings_stability: SettingsStability,
 }
 
 struct Session {
@@ -225,6 +229,24 @@ struct SettingsSnapshot {
     window_mode: Option<bevy::window::WindowMode>,
 }
 
+#[derive(Default)]
+struct SettingsStability {
+    candidate: Option<SettingsSnapshot>,
+    consecutive_updates: u8,
+}
+
+impl SettingsStability {
+    fn observe(&mut self, settings: SettingsSnapshot) -> bool {
+        if self.candidate.as_ref() == Some(&settings) {
+            self.consecutive_updates = self.consecutive_updates.saturating_add(1);
+        } else {
+            self.candidate = Some(settings);
+            self.consecutive_updates = 1;
+        }
+        self.consecutive_updates >= SETTINGS_STABLE_UPDATES
+    }
+}
+
 impl Inputs<'_, '_> {
     fn settings(&self) -> SettingsSnapshot {
         let window = self.windows.single().ok();
@@ -306,7 +328,23 @@ fn start(pending: Pending, inputs: &Inputs<'_, '_>) -> Result<Session, String> {
 }
 
 fn collect(mut telemetry: ResMut<Telemetry>, inputs: Inputs) {
-    if let Some(pending) = telemetry.pending.take() {
+    if telemetry.pending.is_some() {
+        // Android may deliver its final surface size/present mode and apply frame pacing
+        // over several updates after the window first becomes queryable. Do not start a
+        // capture against that transient snapshot: wait for 30 consecutive stable updates.
+        if !matches!(*inputs.strategy, TimeUpdateStrategy::Automatic) {
+            return;
+        }
+        let settings = inputs.settings();
+        let renderer_ready = !telemetry.pending.as_ref().is_some_and(|pending| pending.config.gpu) || inputs.device.is_some();
+        if settings.size.is_none() || !renderer_ready || !telemetry.settings_stability.observe(settings) {
+            return;
+        }
+        let mut pending = telemetry.pending.take().expect("pending telemetry checked above");
+        // The measured interval begins only once the display configuration is stable.
+        // This keeps the configured capture duration available for actual frame samples.
+        pending.epoch = Instant::now();
+        pending.utc = SystemTime::now().duration_since(UNIX_EPOCH).ok();
         match start(pending, &inputs) {
             Ok(session) => telemetry.session = Some(session),
             Err(error) => {
@@ -575,6 +613,39 @@ fn log_summary(path: &std::path::Path, result: Shutdown, gpu: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings(width: u32, height: u32, cap: u32) -> SettingsSnapshot {
+        SettingsSnapshot {
+            size: Some((width, height)),
+            pace: None,
+            cap: Some(cap),
+            refresh: Some(60_000),
+            present: Some(PresentMode::AutoVsync),
+            window_mode: Some(bevy::window::WindowMode::Windowed),
+        }
+    }
+
+    #[test]
+    fn capture_waits_for_thirty_consecutive_stable_display_updates() {
+        let mut stability = SettingsStability::default();
+        for _ in 0..(SETTINGS_STABLE_UPDATES - 1) {
+            assert!(!stability.observe(settings(1280, 800, 30)));
+        }
+        assert!(stability.observe(settings(1280, 800, 30)));
+    }
+
+    #[test]
+    fn display_change_restarts_stability_window() {
+        let mut stability = SettingsStability::default();
+        for _ in 0..(SETTINGS_STABLE_UPDATES - 1) {
+            assert!(!stability.observe(settings(1280, 800, 30)));
+        }
+        assert!(!stability.observe(settings(1920, 1080, 30)));
+        for _ in 0..(SETTINGS_STABLE_UPDATES - 2) {
+            assert!(!stability.observe(settings(1920, 1080, 30)));
+        }
+        assert!(stability.observe(settings(1920, 1080, 30)));
+    }
 
     #[test]
     fn startup_priority_and_settled_boundary() {

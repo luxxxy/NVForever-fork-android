@@ -21,12 +21,12 @@
 //! the port's place for the reconstruction itself ([`Upscaler::Api`]): it is given the same
 //! colour, motion and masks, the common corrected depth as a colour image, and the output.
 
-use std::{ops::{Deref, Range}, sync::{atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering}, Mutex}};
+use std::{borrow::Cow, ops::{Deref, Range}, sync::{atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering}, Mutex}};
 
 use bevy::camera::{CameraMainTextureUsages, Hdr, MainPassResolutionOverride, Viewport};
 use bevy::core_pipeline::{
     core_3d::{main_opaque_pass_3d, main_transparent_pass_3d, Transparent3d},
-    prepass::{DepthPrepass, MotionVectorPrepass, ViewPrepassTextures},
+    prepass::{DepthPrepass, ViewPrepassTextures},
     Core3d, Core3dSystems,
 };
 use bevy::prelude::*;
@@ -66,15 +66,18 @@ impl FsrQuality {
 /// Enable FSR on a perspective HDR camera. The graphics settings enforce Msaa::Off
 /// and remove competing temporal/spatial anti-aliasing components.
 #[derive(Component, Clone, Copy, Debug)]
-#[require(Hdr, DepthPrepass, MotionVectorPrepass, TemporalJitter, MipBias)]
+#[require(Hdr, DepthPrepass, TemporalJitter, MipBias)]
 pub struct FsrUpscaling {
     pub quality: FsrQuality,
     pub sharpness: f32,
+    /// Skip FSR's temporal compute chain and use the shared linear spatial upscale.
+    /// Intended for mobile GPUs where FSR's reconstruction costs more than it saves.
+    pub spatial: bool,
 }
 
 impl Default for FsrUpscaling {
     fn default() -> Self {
-        Self { quality: FsrQuality::Quality, sharpness: 0.2 }
+        Self { quality: FsrQuality::Quality, sharpness: 0.2, spatial: false }
     }
 }
 
@@ -312,6 +315,12 @@ pub(crate) fn prepare(
             }
             continue;
         };
+        if settings.spatial {
+            if old.is_some() {
+                commands.entity(entity).remove::<PreparedFsr>();
+            }
+            continue;
+        }
         debug_assert!(prep::allocates_fsr_state(prepared.camera.settings.upscaler()));
         // Made with the prepared view (`prep::prepare`).
         let Some(common) = &upscale.0 else { continue };
@@ -335,8 +344,10 @@ pub(crate) fn prepare(
 }
 
 /// The masks' uniform (`fsr_reactive.wgsl` `jitter`): FSR's jitter, then two unused floats.
-fn mask_jitter_bytes(jitter: Vec2) -> Vec<u8> {
-    [jitter.x, jitter.y, 0.0, 0.0].into_iter().flat_map(f32::to_ne_bytes).collect()
+fn mask_jitter_bytes(jitter: Vec2) -> [u8; 16] {
+    let x = jitter.x.to_ne_bytes();
+    let y = jitter.y.to_ne_bytes();
+    [x[0], x[1], x[2], x[3], y[0], y[1], y[2], y[3], 0, 0, 0, 0, 0, 0, 0, 0]
 }
 
 fn on_off(on: bool) -> &'static str {
@@ -532,17 +543,42 @@ fn sky_range(sort_keys: impl Iterator<Item = f32>) -> Range<usize> {
 /// without the light term.
 static DEBUG_VIEW: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| std::env::var("NVF_FSR_DEBUG_VIEW").is_ok_and(|v| v.trim() == "1"));
 
+/// Bridges wgpu-ffx's backend-neutral dispatch hooks to Bevy's GPU diagnostics.
+struct FsrGpuPassRecorder<'a>(Option<&'a bevy::render::diagnostic::DiagnosticsRecorder>);
+
+impl wgpu_ffx::FsrPassRecorder for FsrGpuPassRecorder<'_> {
+    fn begin(&mut self, pass: &mut wgpu::ComputePass<'_>, name: &'static str) {
+        if let Some(recorder) = self.0 {
+            recorder.begin_pass_span(pass, Cow::Borrowed(name));
+        }
+    }
+
+    fn end(&mut self, pass: &mut wgpu::ComputePass<'_>) {
+        if let Some(recorder) = self.0 {
+            recorder.end_pass_span(pass);
+        }
+    }
+}
+
 /// Reconstruction is before every effect expecting the full display-sized image. The common
 /// passes (the corrected depth, the fallback, the alpha copy, the expanded depth) are
 /// `upscaler::prep::Pipelines`', called here in the order FSR always ran them.
 #[allow(clippy::type_complexity, clippy::too_many_arguments)]
 pub(crate) fn fsr_pass(
-    view: ViewQuery<(&ViewTarget, &PreparedUpscale, &PreparedFsr, Option<&ViewPrepassTextures>, &TemporalJitter)>,
+    view: ViewQuery<(&ViewTarget, &PreparedUpscale, Option<&PreparedFsr>, Option<&ViewPrepassTextures>, &TemporalJitter)>,
     renderer: Res<FsrRenderer>, upscale: Res<UpscaleRenderer>, device: Res<RenderDevice>, frame_generation: Option<Res<crate::frame_gen::FrameGenRequest>>, mut ctx: RenderContext,
 ) {
     let (target, prepared, fsr, prepass, jitter) = view.into_inner();
-    let (Some(auxiliary), Some(common)) = (&renderer.auxiliary, &upscale.0) else { return };
+    let Some(common) = &upscale.0 else { return };
     let UpscaleSettings::Fsr(settings) = prepared.camera.settings else { return };
+    if settings.spatial {
+        common.fallback(device.wgpu_device(), ctx.command_encoder(), prepared, target);
+        if let Some(depth) = prepass.and_then(|prepass| prepass.depth.as_ref()) {
+            common.expand_depth(device.wgpu_device(), ctx.command_encoder(), prepared, &depth.texture.texture);
+        }
+        return;
+    }
+    let (Some(auxiliary), Some(fsr)) = (&renderer.auxiliary, fsr) else { return };
     let recording = crate::frame_pace::recording();
     let inputs = prepass.and_then(|prepass| prepass.depth.as_ref().zip(prepass.motion_vectors.as_ref()));
     let Some((depth, motion)) = inputs else {
@@ -592,7 +628,10 @@ pub(crate) fn fsr_pass(
             };
             let upscale_span = diagnostics.time_span(encoder, "upscale");
             let dispatched = match &renderer.port {
-                Some(context) => context.dispatch(&mut view.lock().unwrap(), encoder, &info).map_err(|error| error.to_string()),
+                Some(context) => {
+                    let mut pass_recorder = FsrGpuPassRecorder(diagnostics);
+                    context.dispatch_with_recorder(&mut view.lock().unwrap(), encoder, &info, Some(&mut pass_recorder)).map_err(|error| error.to_string())
+                },
                 None => Err("the FSR context is missing".into()),
             };
             upscale_span.end(encoder);
@@ -772,6 +811,15 @@ mod tests {
     use super::*;
     // The camera history and its cuts moved to the common preparation unchanged.
     use crate::upscaler::prep::UpscaleCamera as FsrCamera;
+
+    #[test]
+    fn mask_jitter_uniform_keeps_the_four_float_layout_without_heap_storage() {
+        let actual = mask_jitter_bytes(Vec2::new(0.25, -0.5));
+        let mut expected = [0u8; 16];
+        expected[0..4].copy_from_slice(&0.25f32.to_ne_bytes());
+        expected[4..8].copy_from_slice(&(-0.5f32).to_ne_bytes());
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn quality_modes_have_standard_ratios() {

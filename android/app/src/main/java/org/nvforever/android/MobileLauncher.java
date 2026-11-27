@@ -338,6 +338,9 @@ final class MobileLauncher {
         add(box, label(state.isNull("folder") ? "No complete game folder is ready." : "Ready · imported game files", 16, text));
         add(box, label("Choose your Fallout: New Vegas folder or its Data folder. This makes a full copy in app storage and never changes your originals. Saves and settings are separate; uninstalling removes app files.", 15, weak));
         add(box, tap(state.isNull("folder") ? "Import game folder" : "Replace imported game folder", true, editable(), activity::pickGame));
+        add(box, tap("Export performance diagnostics", false, !activity.runningGame(), activity::exportPerformanceDiagnostics));
+        add(box, tap("Export frame capture (JSONL)", false, !activity.runningGame(), activity::exportFrameCapture));
+        add(box, label("Run the game for at least 60 seconds, close it, then export the ZIP or the plain-text frame capture.", 13, weak));
     }
 
     private void homePage() throws JSONException {
@@ -345,6 +348,9 @@ final class MobileLauncher {
         add(about, label("Experimental build (" + activity.installedVersion() + ") · play with touch, a controller, or a keyboard and mouse.", 15, weak));
         if (state.isNull("folder")) add(about, tap("Set up a game folder", true, true, () -> showGameFolder("Import a complete game folder to enable Play.")));
         add(about, tap(updateChecking ? "Checking for updates…" : "Check for updates", false, !updateChecking && !updateDownloading, () -> checkForUpdates(true)));
+        add(about, tap("Export performance diagnostics", false, !activity.runningGame(), activity::exportPerformanceDiagnostics));
+        add(about, tap("Export frame capture (JSONL)", false, !activity.runningGame(), activity::exportFrameCapture));
+        add(about, label("After a 60-second capture, export the ZIP or the plain-text frame data for easier analysis.", 13, weak));
         if (updateInfo != null && updateInfo.optBoolean("available", false)) {
             String nextVersion = updateInfo.optString("version", "");
             LinearLayout updateCard = card("Update available: v" + nextVersion);
