@@ -126,7 +126,7 @@ fn mark(
             };
             if let Some(shader) = g.data.default_object(DefaultObject::SpotterEffect).filter(|_| g.player_has_entry(fnv_game::perks::HAS_IMPROVED_SPOTTING)) {
                 for (r, at) in crate::compass::actors_near(g, bodies) {
-                    if drawn_distance.is_some_and(|limit| limit < 0.0 || !(distance_sq(at) <= limit * limit)) || g.is_dead(r) || !g.present(r) {
+                    if drawn_distance.is_some_and(|limit| limit < 0.0 || matches!(distance_sq(at).partial_cmp(&(limit * limit)), Some(std::cmp::Ordering::Greater) | None)) || g.is_dead(r) || !g.present(r) {
                         continue;
                     }
                     let fighting = g.awareness.get(r).and_then(|a| a.combat_target()).is_some_and(|(t, _)| t == FormId::PLAYER_REF);
