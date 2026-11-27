@@ -112,7 +112,7 @@ fn mark(
     scratch.now.clear();
     if let (true, Some(player), Some(phys), Some(rt)) = (aiming, player, phys, script.as_deref_mut().and_then(|s| s.rt.as_mut())) {
         let feet = player.feet;
-        let drawn_distance_sq = drawn.0.map(|distance| distance * distance);
+        let drawn_distance = drawn.0;
         scratch.bodies.clear();
         scratch.bodies.extend(phys.npcs.iter().map(|(&id, body)| (id, body.ch.feet)));
         let (bodies, item_ids, now) = (&scratch.bodies, &mut scratch.item_ids, &mut scratch.now);
@@ -126,7 +126,7 @@ fn mark(
             };
             if let Some(shader) = g.data.default_object(DefaultObject::SpotterEffect).filter(|_| g.player_has_entry(fnv_game::perks::HAS_IMPROVED_SPOTTING)) {
                 for (r, at) in crate::compass::actors_near(g, bodies) {
-                    if drawn_distance_sq.is_some_and(|limit| distance_sq(at) > limit) || g.is_dead(r) || !g.present(r) {
+                    if drawn_distance.is_some_and(|limit| limit < 0.0 || !(distance_sq(at) <= limit * limit)) || g.is_dead(r) || !g.present(r) {
                         continue;
                     }
                     let fighting = g.awareness.get(r).and_then(|a| a.combat_target()).is_some_and(|(t, _)| t == FormId::PLAYER_REF);
