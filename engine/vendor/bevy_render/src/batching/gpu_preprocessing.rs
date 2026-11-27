@@ -2849,15 +2849,15 @@ pub fn collect_buffers_for_phase<PI, GFBD>(
 /// into one range. The indirect parameters building shader handles each batch
 /// index on its own, so one dispatch over the merged range does the same work as
 /// one dispatch per range, without a barrier between each.
-fn coalesce_batch_ranges(ranges: &[Range<u32>]) -> Vec<Range<u32>> {
-    let mut merged: Vec<Range<u32>> = Vec::with_capacity(ranges.len());
+fn coalesce_batch_ranges(ranges: &[Range<u32>], merged: &mut Vec<Range<u32>>) {
+    merged.clear();
+    merged.reserve(ranges.len().saturating_sub(merged.capacity()));
     for range in ranges {
         match merged.last_mut() {
             Some(last) if last.end == range.start => last.end = range.end,
             _ => merged.push(range.clone()),
         }
     }
-    merged
 }
 
 /// A system, part of the render world, that gathers up the batch ranges from
@@ -2868,6 +2868,7 @@ pub fn prepare_indirect_parameters_build_jobs(
     mut build_indirect_parameters_metadata: ResMut<BuildIndirectParametersMetadata>,
     mut indirect_parameters_build_jobs: ResMut<IndirectParametersBuildJobs>,
     indirect_parameters_buffers: Res<IndirectParametersBuffers>,
+    mut merged_ranges: Local<Vec<Range<u32>>>,
 ) {
     // Make sure to clear out the indirect parameters build jobs in preparation
     // for a new frame.
@@ -2882,7 +2883,8 @@ pub fn prepare_indirect_parameters_build_jobs(
             .view_to_indirect_parameters_batch_ranges
             .iter()
         {
-            for indirect_parameters_range in coalesce_batch_ranges(indirect_parameters_ranges) {
+            coalesce_batch_ranges(indirect_parameters_ranges, &mut merged_ranges);
+            for indirect_parameters_range in &merged_ranges {
                 let uniform_offset = indirect_parameters_build_jobs.push(
                     IndirectParametersBuildJob::new(indirect_parameters_range.clone()),
                 );
@@ -2906,7 +2908,8 @@ pub fn prepare_indirect_parameters_build_jobs(
             .view_to_indirect_parameters_batch_ranges
             .iter()
         {
-            for indirect_parameters_range in coalesce_batch_ranges(indirect_parameters_ranges) {
+            coalesce_batch_ranges(indirect_parameters_ranges, &mut merged_ranges);
+            for indirect_parameters_range in &merged_ranges {
                 let uniform_offset = indirect_parameters_build_jobs.push(
                     IndirectParametersBuildJob::new(indirect_parameters_range.clone()),
                 );
