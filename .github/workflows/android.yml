@@ -16,6 +16,7 @@ on:
   pull_request:
     paths:
       - 'android/**'
+      - 'engine/vendor/bevy_render/**'
       - 'engine/nvf-android/**'
       - 'engine/nvforever/**'
       - 'tools/android/**'
