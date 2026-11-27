@@ -274,6 +274,10 @@ pub fn update_distant_trees(
     mut materials: ResMut<Assets<BillboardMaterial>>,
     pace: Res<crate::stream_pace::StreamPace>,
     distances: Option<Res<DrawDistances>>,
+    mut completed_reads: Local<Vec<(Grid, Vec<Placed>)>>,
+    mut missing_scratch: Local<Vec<Grid>>,
+    mut by_base_scratch: Local<HashMap<u32, Vec<Placed>>>,
+    mut bases_scratch: Local<Vec<u32>>,
 ) {
     let (flag, far) = (lod.settings.trees, lod.settings.far);
     let dist = reach(flag, far, distances.map_or_else(|| start_part(flag, far), |d| d.trees));
@@ -321,7 +325,8 @@ pub fn update_distant_trees(
     }
     // The cells' TREE references are read on the read pool, nearest first; a cell's cards
     // are built once its list is in.
-    let mut read = Vec::new();
+    let read = &mut *completed_reads;
+    read.clear();
     trees.reading.retain(|g, task| match check_ready(task) {
         Some(list) => {
             read.push((*g, list));
@@ -329,12 +334,13 @@ pub fn update_distant_trees(
         }
         None => true,
     });
-    for (g, list) in read {
+    for (g, list) in read.drain(..) {
         trees.cells.insert(g, Arc::new(list));
     }
     // Above 60 fps a frame gets the same share of itself (stream_pace.rs).
     let per_frame = pace.count(CELLS_PER_FRAME);
-    let mut missing: Vec<Grid> = Vec::new();
+    let missing = &mut *missing_scratch;
+    missing.clear();
     let on_read_threads = crate::stream_pace::on_read_threads();
     for &g in trees.want.iter().filter(|g| !trees.drawn.contains_key(g)) {
         if !on_read_threads && missing.len() < per_frame {
@@ -356,13 +362,18 @@ pub fn update_distant_trees(
         }
     }
     let _spending = (!missing.is_empty()).then(|| pace.spending());
-    for g in missing {
+    for g in missing.drain(..) {
         let Some(placed) = trees.cells.get(&g).cloned() else { continue };
-        let mut by_base: HashMap<u32, Vec<Placed>> = HashMap::new();
+        let by_base = &mut *by_base_scratch;
+        for list in by_base.values_mut() {
+            list.clear();
+        }
         for t in placed.iter() {
             by_base.entry(t.base).or_default().push(*t);
         }
-        let mut bases: Vec<u32> = by_base.keys().copied().collect();
+        let bases = &mut *bases_scratch;
+        bases.clear();
+        bases.extend(by_base.keys().copied());
         bases.sort_unstable();
         let origin = Vec3::new(g.0 as f32 * CELL_SIZE, g.1 as f32 * CELL_SIZE, 0.0);
         let step = fade::step(drawn.tree_level(g));
@@ -370,7 +381,7 @@ pub fn update_distant_trees(
         for b in bases {
             let board = trees.bases.entry(b).or_insert_with(|| board(&world, b, &mut models, &mut materials)).clone();
             let Some((mat, size)) = board else { continue };
-            let list = &by_base[&b];
+            let list = by_base.get(&b).expect("base key came from this cell");
             let (mesh, aabb) = cards(list, origin, size);
             let e = commands
                 .spawn((
