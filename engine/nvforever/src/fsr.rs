@@ -26,7 +26,7 @@ use std::{borrow::Cow, ops::{Deref, Range}, sync::{atomic::{AtomicBool, AtomicU3
 use bevy::camera::{CameraMainTextureUsages, Hdr, MainPassResolutionOverride, Viewport};
 use bevy::core_pipeline::{
     core_3d::{main_opaque_pass_3d, main_transparent_pass_3d, Transparent3d},
-    prepass::{DepthPrepass, MotionVectorPrepass, ViewPrepassTextures},
+    prepass::{DepthPrepass, ViewPrepassTextures},
     Core3d, Core3dSystems,
 };
 use bevy::prelude::*;
