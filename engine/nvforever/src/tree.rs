@@ -346,6 +346,7 @@ fn leaf_indices_all(cards: &[(u32, Vec3)]) -> [Vec<u32>; LEAF_ORDERS] {
 }
 
 /// One heading's leaf-card index order (test aid).
+#[cfg(test)]
 fn leaf_indices(cards: &[(u32, Vec3)], k: usize) -> Vec<u32> {
     leaf_indices_all(cards)[k].clone()
 }
@@ -682,13 +683,13 @@ mod tests {
         // for every heading, including cards tied along a heading.
         let centre = cards.iter().fold(Vec3::ZERO, |sum, card| sum + card.1) / cards.len() as f32;
         let all = super::leaf_indices_all(&cards);
-        for k in 0..super::LEAF_ORDERS {
+        for (k, indices) in all.iter().enumerate() {
             let a = std::f32::consts::TAU * k as f32 / super::LEAF_ORDERS as f32;
             let direction = Vec3::new(a.cos(), a.sin(), 0.0);
             let mut reference: Vec<_> = cards.iter().collect();
             reference.sort_by(|x, y| (y.1 - centre).dot(direction).total_cmp(&(x.1 - centre).dot(direction)));
             let expected: Vec<u32> = reference.iter().flat_map(|&&(first, _)| [first, first + 1, first + 2, first, first + 2, first + 3]).collect();
-            assert_eq!(all[k], expected, "heading {k}");
+            assert_eq!(indices, &expected, "heading {k}");
         }
         // A camera at +y of a tree turned a quarter turn about z lies at its -x: heading 4.
         let tree = GlobalTransform::from(Transform::from_rotation(Quat::from_rotation_z(std::f32::consts::FRAC_PI_2)));
