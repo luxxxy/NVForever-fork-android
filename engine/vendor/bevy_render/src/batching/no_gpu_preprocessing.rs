@@ -137,8 +137,17 @@ pub fn batch_and_prepare_binned_render_phase<BPI, GFBD>(
     gpu_array_buffer.reserve_internal(expected_instances);
 
     for phase in phases.values_mut() {
-        // Prepare batchables.
+        // Each batchable bin contributes one entry to the per-phase batch-set list.
+        // Reserve once up front so a growing scene doesn't repeatedly reallocate this
+        // frame's list while we walk the bins. The Vec is cleared, not replaced, each frame.
+        let expected_batch_sets = phase.batchable_meshes.len();
+        if let BinnedRenderPhaseBatchSets::DynamicUniforms(ref mut batch_sets) =
+            phase.batch_sets
+        {
+            batch_sets.reserve(expected_batch_sets);
+        }
 
+        // Prepare batchables.
         for bin in phase.batchable_meshes.values_mut() {
             let mut batch_set: SmallVec<[BinnedRenderPhaseBatch; 1]> = smallvec![];
             for main_entity in bin.entities().keys() {
