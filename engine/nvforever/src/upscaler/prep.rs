@@ -697,7 +697,7 @@ mod tests {
                 assert!(matches!(dlss, UpscaleSettings::Dlss(q) if q == quality), "{quality:?} {fsr_supported}");
                 assert!(!allocates_fsr_state(dlss.upscaler()));
             }
-            let fsr_camera = camera_settings(Some(&FsrUpscaling { quality, sharpness: 0.2 }), None, true).unwrap();
+            let fsr_camera = camera_settings(Some(&FsrUpscaling { quality, sharpness: 0.2, spatial: false }), None, true).unwrap();
             assert!(matches!(fsr_camera, UpscaleSettings::Fsr(f) if f.quality == quality), "FSR stays FSR");
         }
     }
