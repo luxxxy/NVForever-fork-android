@@ -468,4 +468,28 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn cpu_visibility_update_reuses_entity_storage_and_tracks_deltas() {
+        let main_a = MainEntity::from(Entity::from_bits(1));
+        let main_b = MainEntity::from(Entity::from_bits(2));
+        let main_c = MainEntity::from(Entity::from_bits(3));
+        let render_a = Entity::from_bits(11);
+        let render_b = Entity::from_bits(12);
+        let render_c = Entity::from_bits(13);
+
+        let mut visible = RenderVisibleEntitiesClass {
+            entities_cpu_culling: vec![(render_a, main_a), (render_b, main_b)],
+            ..default()
+        };
+        let original_capacity = visible.entities_cpu_culling.capacity();
+
+        // The next frame removes A, keeps B and adds C.
+        visible.update_cpu_culled_entities(&[(render_b, main_b), (render_c, main_c)]);
+
+        assert_eq!(visible.entities_cpu_culling, vec![(render_b, main_b), (render_c, main_c)]);
+        assert_eq!(visible.removed_entities, vec![(render_a, main_a)]);
+        assert_eq!(visible.added_entities, vec![(render_c, main_c)]);
+        assert_eq!(visible.entities_cpu_culling.capacity(), original_capacity);
+    }
 }
