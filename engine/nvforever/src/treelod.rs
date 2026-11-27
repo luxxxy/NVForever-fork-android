@@ -368,12 +368,15 @@ pub fn update_distant_trees(
         for list in by_base.values_mut() {
             list.clear();
         }
-        for t in placed.iter() {
-            by_base.entry(t.base).or_default().push(*t);
-        }
         let bases = &mut *bases_scratch;
         bases.clear();
-        bases.extend(by_base.keys().copied());
+        for t in placed.iter() {
+            let list = by_base.entry(t.base).or_default();
+            if list.is_empty() {
+                bases.push(t.base);
+            }
+            list.push(*t);
+        }
         bases.sort_unstable();
         let origin = Vec3::new(g.0 as f32 * CELL_SIZE, g.1 as f32 * CELL_SIZE, 0.0);
         let step = fade::step(drawn.tree_level(g));
