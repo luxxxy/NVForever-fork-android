@@ -3741,18 +3741,24 @@ mod tests {
                 let refined = refine_quad(alpha, sub);
                 for q in 0..4u8 {
                     let base = quadrant_mesh_drawn(&land, &surface, q, draw, None, Vec2::ZERO, 256.0).unwrap();
-                    let shared = layer_mesh_from_base(base, &refined);
+                    let shared = layer_mesh_from_base(base.clone(), &refined);
                     let direct = quadrant_mesh_drawn(&land, &surface, q, draw, Some(&refined), Vec2::ZERO, 256.0);
                     match (shared, direct) {
                         (None, None) => {}
                         (Some(a), Some(b)) => {
                             assert_eq!(triangles(&a), triangles(&b), "q{q} {draw:?}");
-                            for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0, Mesh::ATTRIBUTE_TANGENT] {
+                            for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0, Mesh::ATTRIBUTE_TANGENT, Mesh::ATTRIBUTE_COLOR] {
                                 assert_eq!(a.attribute(attribute), b.attribute(attribute), "q{q} {draw:?}: {attribute:?}");
                             }
-                            assert_eq!(a.attribute(Mesh::ATTRIBUTE_COLOR), b.attribute(Mesh::ATTRIBUTE_COLOR), "q{q} {draw:?}: opacity");
                         }
                         _ => panic!("shared and direct layer construction disagree: q{q} {draw:?}"),
+                    }
+                    let packed: Vec<&[f32]> = (0..folded_layers(256.0)).map(|_| refined.as_slice()).collect();
+                    let shared_folded = folded_mesh_from_base(base.clone(), &packed, 256.0);
+                    let direct_folded = folded_mesh_drawn(&land, &surface, q, draw, &packed, Vec2::ZERO, 256.0).unwrap();
+                    assert_eq!(triangles(&shared_folded), triangles(&direct_folded), "folded q{q} {draw:?}");
+                    for attribute in [Mesh::ATTRIBUTE_POSITION, Mesh::ATTRIBUTE_NORMAL, Mesh::ATTRIBUTE_UV_0, Mesh::ATTRIBUTE_UV_1, Mesh::ATTRIBUTE_TANGENT, Mesh::ATTRIBUTE_COLOR] {
+                        assert_eq!(shared_folded.attribute(attribute), direct_folded.attribute(attribute), "folded q{q} {draw:?}: {attribute:?}");
                     }
                 }
             }
