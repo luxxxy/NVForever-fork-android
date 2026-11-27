@@ -243,7 +243,7 @@ fn tube(lv: &Level, pts: &[V], dirs: &[V], radius: f32, g: &mut Geometry) {
         let v = cross(d, u);
         let s = i as f32 / segs as f32;
         let r = radius * lv.taper().y(s).max(0.0);
-        for &(cos, sin) in &ring_directions[..=sides] {
+        for (k, &(cos, sin)) in ring_directions[..=sides].iter().enumerate() {
             let n = add(scale(u, cos), scale(v, sin));
             g.positions.push(add(p, scale(n, r)));
             g.normals.push(n);
