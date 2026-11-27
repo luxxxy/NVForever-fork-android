@@ -230,15 +230,21 @@ fn tube(lv: &Level, pts: &[V], dirs: &[V], radius: f32, g: &mut Geometry) {
     g.normals.reserve(ring_vertices);
     g.uvs.reserve(ring_vertices);
     g.indices.reserve(segs * sides * 6);
+    // The ring angles are identical at every centre-line point. Keep their sine/cosine
+    // pairs on the stack and calculate them once per branch, not once per ring vertex.
+    let mut ring_directions = [(0.0f32, 0.0f32); 33];
+    for (k, direction) in ring_directions.iter_mut().take(sides + 1).enumerate() {
+        let a = k as f32 / sides as f32 * std::f32::consts::TAU;
+        *direction = (a.cos(), a.sin());
+    }
     for (i, (&p, &d)) in pts.iter().zip(dirs).enumerate() {
         // Carry the frame along so the rings do not twist.
         u = norm(sub(u, scale(d, dot(u, d))));
         let v = cross(d, u);
         let s = i as f32 / segs as f32;
         let r = radius * lv.taper().y(s).max(0.0);
-        for k in 0..=sides {
-            let a = k as f32 / sides as f32 * std::f32::consts::TAU;
-            let n = add(scale(u, a.cos()), scale(v, a.sin()));
+        for &(cos, sin) in &ring_directions[..=sides] {
+            let n = add(scale(u, cos), scale(v, sin));
             g.positions.push(add(p, scale(n, r)));
             g.normals.push(n);
             g.uvs.push([around * k as f32 / sides as f32, along * s]);
