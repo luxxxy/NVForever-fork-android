@@ -1048,7 +1048,11 @@ fn apply(
     }
     let upscaler = crate::upscaler::effective_temporal(g.fsr(), fsr_support.0, status.as_deref());
     let (fsr, dlss) = (upscaler.fsr(), upscaler.dlss());
-    let temporal = upscaler != UpscalerChoice::Off;
+    // Spatial fallback does not use temporal history or motion vectors. Treat it like
+    // a spatial AA path for cut-outs/MSAA, while retaining the depth prepass needed by
+    // full-resolution screen-space effects after the upscale.
+    let spatial_mobile = cfg!(target_os = "android") && g.mobile_fast_upscale && fsr.is_some();
+    let temporal = upscaler != UpscalerChoice::Off && !spatial_mobile;
     // Blended shapes that draw the same as cut-outs (the corn rows) are cut-outs for a
     // temporal upscaler, which needs their depth and motion (nif_material::BlendedCutouts).
     if let Some(mut cutouts) = cutouts {
