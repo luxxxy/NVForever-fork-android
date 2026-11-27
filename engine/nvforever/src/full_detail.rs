@@ -81,7 +81,7 @@ use fnv_esm::LoadOrder;
 use fnv_world::placed::{base_object, placement_visible_when_distant, BaseObject, Placement};
 use fnv_world::CELL_SIZE;
 use nvf_assets::model::ModelCtx;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 pub type Grid = (i32, i32);
