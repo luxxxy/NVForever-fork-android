@@ -1535,6 +1535,7 @@ fn folded_mesh_from_base(mut mesh: Mesh, alphas: &[&[f32]], tile: f32) -> Mesh {
 }
 
 /// [`folded_mesh`] drawn as `draw` says ([`quadrant_mesh_drawn`]).
+#[cfg(test)]
 fn folded_mesh_drawn(land: &Land, surface: &Surface, q: u8, draw: QuadrantDraw, alphas: &[&[f32]], cell_origin: Vec2, tile: f32) -> Option<Mesh> {
     let mesh = quadrant_mesh_drawn(land, surface, q, draw, None, cell_origin, tile)?;
     Some(folded_mesh_from_base(mesh, alphas, tile))
