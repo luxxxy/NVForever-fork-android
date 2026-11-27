@@ -634,7 +634,7 @@ mod tests {
 
     fn advance_test_animations(
         time: Res<Time>,
-        playing: Query<&mut Playing>,
+        playing: Query<(&mut Playing, Option<&InheritedVisibility>)>,
         transforms: Query<&mut Transform>,
         visibility: Query<&mut Visibility>,
     ) {
