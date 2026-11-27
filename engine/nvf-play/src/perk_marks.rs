@@ -33,7 +33,7 @@ use crate::{PlaySet, PlayState};
 use bevy::prelude::*;
 use fnv_game::data::DefaultObject;
 use fnv_sim::FormId;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 /// How near an item must lie for Search and Mark, game units [design: the fandom wiki's
 /// "within a short distance"; no setting names it].
@@ -59,6 +59,15 @@ const POLL: f32 = 0.1;
 /// What the perks mark now: (reference, effect shader, the perk's name for the log).
 #[derive(Resource, Default, Debug, Clone, PartialEq)]
 pub struct PerkMarks(pub Vec<(FormId, FormId, &'static str)>);
+
+/// Scratch storage retained between perk-mark polls; these scans run only while aiming,
+/// but their temporary collections used to allocate afresh on every poll.
+#[derive(Default)]
+struct MarkScratch {
+    bodies: HashMap<u32, [f32; 3]>,
+    item_ids: BTreeSet<FormId>,
+    now: Vec<(FormId, FormId, &'static str)>,
+}
 
 pub struct PerkMarksPlugin;
 
@@ -92,7 +101,7 @@ fn mark(
     mut script: Option<ResMut<ScriptState>>,
     mut sim: ResMut<SimState>,
     mut marks: ResMut<PerkMarks>,
-    (mut poll, mut logged): (Local<f32>, Local<[usize; 2]>),
+    (mut poll, mut logged, mut scratch): (Local<f32>, Local<[usize; 2]>, Local<MarkScratch>),
 ) {
     *poll += time.delta_secs();
     if *poll < POLL {
@@ -100,60 +109,74 @@ fn mark(
     }
     *poll = 0.0;
     let aiming = *state.get() == PlayState::Playing && control.aiming && control.weapon_out && combat.is_some();
-    let mut now: Vec<(FormId, FormId, &'static str)> = Vec::new();
+    scratch.now.clear();
     if let (true, Some(player), Some(phys), Some(rt)) = (aiming, player, phys, script.as_deref_mut().and_then(|s| s.rt.as_mut())) {
         let feet = player.feet;
-        let drawn = *drawn;
-        let bodies: std::collections::HashMap<u32, [f32; 3]> = phys.npcs.iter().map(|(&id, b)| (id, b.ch.feet)).collect();
-        now = with_world(rt, &mut sim, |rt| {
+        let drawn_distance_sq = drawn.0.map(|distance| distance * distance);
+        scratch.bodies.clear();
+        scratch.bodies.extend(phys.npcs.iter().map(|(&id, body)| (id, body.ch.feet)));
+        let (bodies, item_ids, now) = (&scratch.bodies, &mut scratch.item_ids, &mut scratch.now);
+        with_world(rt, &mut sim, |rt| {
             let g = &mut rt.game;
-            let mut out = Vec::new();
-            let dist = |at: [f32; 3]| ((at[0] - feet[0]).powi(2) + (at[1] - feet[1]).powi(2) + (at[2] - feet[2]).powi(2)).sqrt();
+            let distance_sq = |at: [f32; 3]| {
+                let x = at[0] - feet[0];
+                let y = at[1] - feet[1];
+                let z = at[2] - feet[2];
+                x * x + y * y + z * z
+            };
             if let Some(shader) = g.data.default_object(DefaultObject::SpotterEffect).filter(|_| g.player_has_entry(fnv_game::perks::HAS_IMPROVED_SPOTTING)) {
-                for (r, at) in crate::compass::actors_near(g, &bodies) {
-                    if !spotter_reaches(dist(at), drawn) || g.is_dead(r) || !g.present(r) {
+                for (r, at) in crate::compass::actors_near(g, bodies) {
+                    if drawn_distance_sq.is_some_and(|limit| distance_sq(at) > limit) || g.is_dead(r) || !g.present(r) {
                         continue;
                     }
                     let fighting = g.awareness.get(r).and_then(|a| a.combat_target()).is_some_and(|(t, _)| t == FormId::PLAYER_REF);
                     if fighting || g.would_attack(r, FormId::PLAYER_REF) {
-                        out.push((r, shader, "Spotter"));
+                        now.push((r, shader, "Spotter"));
                     }
                 }
             }
             if let Some(shader) = g.data.default_object(DefaultObject::ItemDetectedEffect).filter(|_| g.player_has_entry(fnv_game::perks::HAS_IMPROVED_ITEM_DETECTION)) {
                 let placed = g.world.placed;
-                let mut ids: BTreeSet<FormId> = g.loaded_cells.iter().filter_map(|c| placed.by_cell.get(c)).flatten().copied().collect();
-                ids.extend(g.moved.iter().copied());
-                for r in ids {
+                item_ids.clear();
+                item_ids.extend(g.loaded_cells.iter().filter_map(|c| placed.by_cell.get(c)).flatten().copied());
+                item_ids.extend(g.moved.iter().copied());
+                for r in item_ids.iter().copied() {
                     let Some(p) = placed.get(r).filter(|p| &p.sig == b"REFR") else { continue };
                     if !searched(g.data, p.base) || !g.present(r) || !g.cell_of(r).is_some_and(|c| g.loaded_cells.contains(&c)) {
                         continue;
                     }
                     let at = g.world.peek(r).map_or(p.pos, |s| s.pos);
-                    if dist(at) <= SEARCH_RANGE {
-                        out.push((r, shader, "Search and Mark"));
+                    if distance_sq(at) <= SEARCH_RANGE * SEARCH_RANGE {
+                        now.push((r, shader, "Search and Mark"));
                     }
                 }
-                // Items dropped or placed at run time (`World::created`).
-                let created: Vec<(FormId, FormId, Option<FormId>, [f32; 3])> = g.world.created().filter(|(_, s)| !s.deleted() && s.enabled()).map(|(r, s)| (r, s.base, s.cell, s.pos)).collect();
-                for (r, base, cell, at) in created {
-                    if searched(g.data, base) && cell.is_some_and(|c| g.loaded_cells.contains(&c)) && dist(at) <= SEARCH_RANGE {
-                        out.push((r, shader, "Search and Mark"));
+                // Items dropped or placed at run time (`World::created`), visited in place
+                // rather than first collecting a temporary Vec.
+                for (r, item) in g.world.created() {
+                    if !item.deleted()
+                        && item.enabled()
+                        && searched(g.data, item.base)
+                        && item.cell.is_some_and(|c| g.loaded_cells.contains(&c))
+                        && distance_sq(item.pos) <= SEARCH_RANGE * SEARCH_RANGE
+                    {
+                        now.push((r, shader, "Search and Mark"));
                     }
                 }
             }
-            out
         });
     }
-    let counts = [now.iter().filter(|m| m.2 == "Spotter").count(), now.iter().filter(|m| m.2 != "Spotter").count()];
+    let counts = scratch.now.iter().fold([0, 0], |mut counts, mark| {
+        counts[usize::from(mark.2 != "Spotter")] += 1;
+        counts
+    });
     for (i, (perk, what)) in [("Spotter", "hostile actors"), ("Search and Mark", "items")].into_iter().enumerate() {
         if counts[i] != logged[i] {
             logged[i] = counts[i];
             info!("perk marks: {perk} marks {} {what} while the player aims", counts[i]);
         }
     }
-    if marks.0 != now {
-        marks.0 = now;
+    if marks.0 != scratch.now {
+        marks.0.clone_from(&scratch.now);
     }
 }
 
