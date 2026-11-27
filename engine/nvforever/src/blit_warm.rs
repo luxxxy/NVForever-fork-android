@@ -25,7 +25,7 @@
 use bevy::core_pipeline::blit::{BlitPipeline, BlitPipelineKey};
 use bevy::prelude::*;
 use bevy::render::render_resource::{BlendState, PipelineCache, SpecializedRenderPipelines, TextureFormat};
-use bevy::render::{Render, RenderApp, RenderSystems};
+use bevy::render::{RenderApp, RenderStartup};
 
 /// The output formats of the game's views.
 const FORMATS: [TextureFormat; 6] = [
@@ -40,12 +40,21 @@ const FORMATS: [TextureFormat; 6] = [
 /// Every upscaling key warmed: each format, written over (the first camera on a target)
 /// and blended (the ones after it).
 pub fn keys() -> Vec<BlitPipelineKey> {
-    FORMATS
-        .iter()
-        .flat_map(|&target_format| {
-            [None, Some(BlendState::ALPHA_BLENDING)].map(|blend_state| BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state, samples: 1, source_space: None })
-        })
-        .collect()
+    let mut keys = Vec::with_capacity(FORMATS.len() * 2);
+
+    // The main window uses one of these two sRGB formats. Queue both unblended
+    // variants first so the window's actual key is near the front of the compile
+    // queue; off-screen and blended camera variants can follow.
+    for &target_format in &FORMATS[..2] {
+        keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: None, samples: 1, source_space: None });
+    }
+    for &target_format in &FORMATS[2..] {
+        keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: None, samples: 1, source_space: None });
+    }
+    for &target_format in &FORMATS {
+        keys.push(BlitPipelineKey { hdr: false, hdr_gamma22: false, target_format, blend_state: Some(BlendState::ALPHA_BLENDING), samples: 1, source_space: None });
+    }
+    keys
 }
 
 pub struct BlitWarmPlugin;
@@ -53,34 +62,46 @@ pub struct BlitWarmPlugin;
 impl Plugin for BlitWarmPlugin {
     fn build(&self, app: &mut App) {
         if let Some(render) = app.get_sub_app_mut(RenderApp) {
-            render.add_systems(Render, warm.in_set(RenderSystems::Prepare));
+            // The first view blocks in Bevy's prepare_view_upscaling_pipelines until
+            // its blit pipeline is ready. Queue the window variants during RenderStartup,
+            // after Bevy has created both resources, rather than racing that blocking
+            // system in RenderSystems::Prepare. RenderStartup runs again on device recovery.
+            render.add_systems(
+                RenderStartup,
+                warm
+                    .after(bevy::core_pipeline::blit::init_blit_pipeline)
+                    .after(bevy::render::init_gpu_resource::<SpecializedRenderPipelines<BlitPipeline>>),
+            );
         }
     }
 }
 
-/// Specializes every key once, as soon as the blit pipeline exists (it is made in the
-/// render app's start-up).
+/// Specializes every key after the blit pipeline and specialized-pipeline cache have
+/// been initialized for this render device.
 fn warm(
-    mut done: Local<bool>,
     cache: Res<PipelineCache>,
-    blit: Option<Res<BlitPipeline>>,
-    pipelines: Option<ResMut<SpecializedRenderPipelines<BlitPipeline>>>,
+    blit: Res<BlitPipeline>,
+    mut pipelines: ResMut<SpecializedRenderPipelines<BlitPipeline>>,
 ) {
-    if *done {
-        return;
-    }
-    let (Some(blit), Some(mut pipelines)) = (blit, pipelines) else { return };
     let keys = keys();
     for key in &keys {
         pipelines.specialize(&cache, &blit, *key);
     }
-    *done = true;
-    info!("blit warm: {} upscaling pipelines queued for compiling at start-up", keys.len());
+    info!("blit warm: {} upscaling pipelines queued during render startup", keys.len());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_window_srgb_variants_are_first_and_unblended() {
+        let k = keys();
+        assert_eq!(k[0].target_format, TextureFormat::Rgba8UnormSrgb);
+        assert_eq!(k[1].target_format, TextureFormat::Bgra8UnormSrgb);
+        assert!(k[0].blend_state.is_none());
+        assert!(k[1].blend_state.is_none());
+    }
 
     #[test]
     fn every_format_written_and_blended() {
