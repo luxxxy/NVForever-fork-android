@@ -149,8 +149,11 @@ fn grow(tree: &Tree, from_axis: &[bool], b: Branch, rng: &mut Rng, g: &mut Geome
     let segs = lv.segments_along.clamp(1, 32) as usize;
     // Centre line: equal steps, each turned a little from the last by the 6000 spread.
     let bend = lv.bend().variance.to_radians() / segs as f32;
-    let mut pts = vec![base];
-    let mut dirs = vec![dir];
+    // The branch always contributes exactly segs + 1 centre-line points.
+    let mut pts = Vec::with_capacity(segs + 1);
+    pts.push(base);
+    let mut dirs = Vec::with_capacity(segs + 1);
+    dirs.push(dir);
     let mut d = dir;
     for s in 0..segs {
         if s > 0 && bend > 0.0 {
@@ -174,6 +177,10 @@ fn grow(tree: &Tree, from_axis: &[bool], b: Branch, rng: &mut Rng, g: &mut Geome
     let axis_reading = from_axis.get(child).copied().unwrap_or(false);
     // Children per unit of length (6012), rounded up or down at random.
     let n = (lv.frequency.max(0.0) * length + rng.f()).floor().min(MAX_CHILDREN) as usize;
+    if leafy && !tree.leaf_maps.is_empty() {
+        let remaining = MAX_LEAVES.saturating_sub(g.leaves.len());
+        g.leaves.reserve(n.min(remaining));
+    }
     let mut azimuth = rng.f() * std::f32::consts::TAU;
     for k in 0..n {
         let t = lv.first + (lv.last - lv.first) * ((k as f32 + rng.f()) / n as f32);
@@ -218,6 +225,11 @@ fn tube(lv: &Level, pts: &[V], dirs: &[V], radius: f32, g: &mut Geometry) {
     let [around, along] = lv.texture_repeat.map(|r| if r > 0.0 { r } else { 1.0 });
     let mut u = perpendicular(dirs[0]);
     let segs = pts.len() - 1;
+    let ring_vertices = (segs + 1) * (sides + 1);
+    g.positions.reserve(ring_vertices);
+    g.normals.reserve(ring_vertices);
+    g.uvs.reserve(ring_vertices);
+    g.indices.reserve(segs * sides * 6);
     for (i, (&p, &d)) in pts.iter().zip(dirs).enumerate() {
         // Carry the frame along so the rings do not twist.
         u = norm(sub(u, scale(d, dot(u, d))));
