@@ -264,6 +264,11 @@ struct GpuReadbacks {
     mapped: Vec<GpuReadback>,
 }
 
+/// Returns whether this frame has any GPU readbacks to encode.
+pub(crate) fn has_pending_readback_commands(world: &World) -> bool {
+    !world.resource::<GpuReadbacks>().requested.is_empty()
+}
+
 struct GpuReadback {
     pub entity: Entity,
     pub src: ReadbackSource,
