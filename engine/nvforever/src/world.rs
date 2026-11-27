@@ -837,6 +837,9 @@ pub struct ReadAhead {
     listed: HashMap<(i32, i32), CellAhead>,
     /// When each cell wanted for drawing was first found not ready (seconds).
     waiting: HashMap<(i32, i32), f64>,
+    /// Completed worker results collected during the last read-ahead pass. Kept empty
+    /// between frames so its allocation can be reused instead of rebuilt every frame.
+    done: Vec<((i32, i32), CellAhead)>,
     /// The start's cells read ahead on the read pool ([`start_pool_prep`]).
     start: StartPrep,
 }
@@ -981,7 +984,8 @@ pub(crate) fn read_ahead_cells(world: &WorldData, ahead: &mut ReadAhead, area: A
             ahead.listing.insert(c, task);
         }
     }
-    let mut done = Vec::new();
+    let mut done = std::mem::take(&mut ahead.done);
+    done.clear();
     ahead.listing.retain(|c, task| match (!late()).then(|| check_ready(task)).flatten() {
         Some(a) => {
             done.push((*c, a));
@@ -989,13 +993,14 @@ pub(crate) fn read_ahead_cells(world: &WorldData, ahead: &mut ReadAhead, area: A
         }
         None => true,
     });
-    for (c, mut a) in done {
+    for (c, mut a) in done.drain(..) {
         // Past the deadline its models are asked for when the cell is (`cell_ready`).
         if !late() {
             a.ready = models.models_ready(a.models.iter().map(|(p, s)| (p.as_str(), s.as_slice())));
         }
         ahead.listed.insert(c, a);
     }
+    ahead.done = done;
 }
 
 /// Whether the cell `c`'s models are all prepared, so it can be drawn without reading a
