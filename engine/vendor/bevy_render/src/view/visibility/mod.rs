@@ -478,8 +478,10 @@ mod tests {
         let render_b = Entity::from_bits(12);
         let render_c = Entity::from_bits(13);
 
+        let mut previous_entities = Vec::with_capacity(64);
+        previous_entities.extend([(render_a, main_a), (render_b, main_b)]);
         let mut visible = RenderVisibleEntitiesClass {
-            entities_cpu_culling: vec![(render_a, main_a), (render_b, main_b)],
+            entities_cpu_culling: previous_entities,
             ..default()
         };
         let original_capacity = visible.entities_cpu_culling.capacity();
