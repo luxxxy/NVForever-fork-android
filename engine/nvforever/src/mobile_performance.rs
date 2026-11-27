@@ -346,6 +346,19 @@ pub fn register(app: &mut App) {
     settings::add_setting(
         app,
         Setting {
+            key: "mobile-fast-upscaling",
+            group: "Display",
+            label: "Fast spatial upscaling",
+            note: "Uses one linear upscale instead of FSR temporal reconstruction. Much cheaper on the GPU, but the image is softer. Turn off to restore full FSR 3.1 reconstruction.",
+            switches: "",
+            get: |w| w.resource::<Graphics>().mobile_fast_upscale,
+            set: |w, enabled| w.resource_mut::<Graphics>().mobile_fast_upscale = enabled,
+            slider: None,
+        },
+    );
+    settings::add_setting(
+        app,
+        Setting {
             key: "mobile-thermal-auto",
             group: "Display",
             label: "Automatic thermal adjustment",
