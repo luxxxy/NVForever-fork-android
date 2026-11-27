@@ -1103,20 +1103,6 @@ impl DrawnCells<'_> {
         }
     }
 
-    /// Every drawn cell with whether it is fully drawn: the loaded ones (those not
-    /// fading), then the ring's; for `blocks` (object LOD segments) without the ring cells
-    /// that keep their segment.
-    pub fn cells(&self, blocks: bool) -> Vec<(Grid, bool)> {
-        let mut out = Vec::new();
-        self.cells_into(blocks, &mut out);
-        out
-    }
-
-    /// The cells fully drawn: the LOD terrain is cut out there.
-    pub fn full(&self) -> HashSet<Grid> {
-        self.cells(false).into_iter().filter(|(_, full)| *full).map(|(c, _)| c).collect()
-    }
-
     /// How much of cell `c` is drawn for its LOD segment's crossfade: the loaded cell's
     /// level or the ring cell's, whichever is more.
     pub fn block_level(&self, c: Grid) -> f32 {
@@ -1137,6 +1123,7 @@ pub fn tree_level(loaded: f32, ring: Option<&HashMap<Grid, RingCellState>>, c: G
 }
 
 /// [`DrawnCells::cells`] from the loaded cells (cell, fully drawn) and the ring's.
+#[cfg(test)]
 pub fn drawn_cells(loaded: impl Iterator<Item = (Grid, bool)>, ring: Option<&HashMap<Grid, RingCellState>>, blocks: bool) -> Vec<(Grid, bool)> {
     let mut out: Vec<(Grid, bool)> = loaded.collect();
     out.extend(ring.into_iter().flatten().filter(|(_, s)| !(blocks && s.keep_segment())).map(|(c, s)| (*c, s.full())));

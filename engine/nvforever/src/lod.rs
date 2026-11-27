@@ -301,7 +301,7 @@ fn despawn_all(commands: &mut Commands, entities: impl IntoIterator<Item = Entit
 /// Reusable cell coverage for the distant LOD. Cell membership changes only when the
 /// loaded/ring set or a fade's settled state changes, not on every rendered frame.
 #[derive(Default)]
-struct DrawnCellCache {
+pub(crate) struct DrawnCellCache {
     origin: Option<Grid>,
     full_cells: Vec<(Grid, bool)>,
     full_scratch: Vec<(Grid, bool)>,
@@ -947,6 +947,7 @@ fn texture_failure(failures: &[String], path: &str) -> String {
 
 /// The masks of the level-4 squares holding `cells` (cell, fully drawn; on the grid from
 /// `o`): cells fully drawn, cells drawn at all (bit `y * 4 + x`, [`chunk_bit`]).
+#[cfg(test)]
 pub(crate) fn block_masks(cells: &[(Grid, bool)], o: Grid) -> HashMap<Grid, (u16, u16)> {
     let mut masks: HashMap<Grid, (u16, u16)> = HashMap::new();
     for &(c, full) in cells {
