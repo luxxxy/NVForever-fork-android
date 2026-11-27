@@ -93,6 +93,10 @@ pub fn render_system(
 
     world.run_schedule(RenderGraph);
 
+    // Screenshot and readback commands are uncommon. Avoid creating and submitting an
+    // otherwise-empty command buffer on every frame when neither feature has work queued.
+    if crate::view::screenshot::has_pending_screenshot_commands(world)
+        || crate::gpu_readback::has_pending_readback_commands(world)
     {
         let render_device = world.resource::<RenderDevice>();
         let render_queue = world.resource::<RenderQueue>();

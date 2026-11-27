@@ -208,8 +208,10 @@ pub(crate) fn extract(
     loading: Extract<Option<Res<nvf_play::loading::Loading>>>,
     play_state: Extract<Option<Res<State<nvf_play::PlayState>>>>,
     pipboy_screen: Extract<Option<Res<nvf_play::pipboy::PipBoyScreen>>>,
+    mut active: Local<Vec<Entity>>,
 ) {
-    let mut active = Vec::new();
+    // Reuse this per-frame scratch list instead of allocating it on every extraction.
+    active.clear();
     for (entity, camera, projection, transform, fsr, dlss) in &cameras {
         let (Some(settings), Projection::Perspective(projection)) = (camera_settings(fsr, dlss, support.0), projection) else { continue };
         if !camera.is_active || camera.physical_viewport_size().is_none_or(|s| s.x < 32 || s.y < 32) {
@@ -229,8 +231,11 @@ pub(crate) fn extract(
             screen_mark: pipboy_screen.as_ref().is_some_and(|screen| screen.on_model),
         });
     }
+    // Existing upscaler cameras are checked against the sorted active list in O(log n),
+    // rather than repeatedly scanning it in O(n).
+    active.sort_unstable();
     for entity in &existing {
-        if !active.contains(&entity) {
+        if active.binary_search(&entity).is_err() {
             // A backend's own prepared state goes in its prepare (`fsr::prepare`).
             commands.entity(entity).remove::<(UpscaleCamera, PreparedUpscale, MainPassResolutionOverride, UnsuitableViewWarned)>();
         }

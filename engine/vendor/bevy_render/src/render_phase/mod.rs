@@ -2311,8 +2311,13 @@ pub fn sort_phase_system<I>(
         let Some(phase) = render_phases.get_mut(&view.retained_view_entity) else {
             continue;
         };
-        phase.recalculate_sort_keys(view);
-        phase.sort();
+        // A zero- or one-item phase is already in sorted order. Avoid recalculating
+        // per-item sort keys (which can include view-space distance work) and invoking
+        // the sort implementation when there is nothing to reorder.
+        if phase.items.len() > 1 {
+            phase.recalculate_sort_keys(view);
+            phase.sort();
+        }
     }
 }
 

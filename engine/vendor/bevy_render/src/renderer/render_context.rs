@@ -304,6 +304,8 @@ struct RenderContextStateInner {
     // NVForever encoder spans: a GPU time span is open on `command_encoder`.
     span_open: bool,
     commands: Vec<PendingCommandBuffer>,
+    // Reusable destination for early-finish conversion; swapping retains both allocations.
+    commands_scratch: Vec<PendingCommandBuffer>,
     render_device: Option<RenderDevice>,
 }
 
@@ -375,10 +377,12 @@ impl SystemBuffer for RenderContextState {
         // can be finished now, on the compute threads.
         #[cfg(not(target_arch = "wasm32"))]
         {
-            inner.commands = inner
-                .commands
-                .drain(..)
-                .map(|command| match command {
+            // Convert in submission order into a reusable scratch Vec. Swapping the
+            // buffers retains both allocations across render systems and avoids moving
+            // a just-converted command back through the source queue.
+            inner.commands_scratch.clear();
+            for command in inner.commands.drain(..) {
+                inner.commands_scratch.push(match command {
                     PendingCommandBuffer::Encoder {
                         encoder,
                         #[cfg(feature = "trace")]
@@ -389,8 +393,9 @@ impl SystemBuffer for RenderContextState {
                         name,
                     )),
                     other => other,
-                })
-                .collect();
+                });
+            }
+            core::mem::swap(&mut inner.commands, &mut inner.commands_scratch);
         }
 
         if !inner.commands.is_empty() {

@@ -264,6 +264,11 @@ struct GpuReadbacks {
     mapped: Vec<GpuReadback>,
 }
 
+/// Returns whether this frame has any GPU readbacks to encode.
+pub(crate) fn has_pending_readback_commands(world: &World) -> bool {
+    !world.resource::<GpuReadbacks>().requested.is_empty()
+}
+
 struct GpuReadback {
     pub entity: Entity,
     pub src: ReadbackSource,
@@ -394,13 +399,12 @@ pub(crate) fn submit_readback_commands(world: &World, command_encoder: &mut Comm
 }
 
 /// Move requested readbacks to mapped readbacks after commands have been submitted in render system
-#[expect(
-    clippy::drain_collect,
-    reason = "draining preserves the capacity of `requested`, which is refilled every frame"
-)]
 fn map_buffers(mut readbacks: ResMut<GpuReadbacks>) {
-    let requested = readbacks.requested.drain(..).collect::<Vec<GpuReadback>>();
-    for readback in requested {
+    // Split the two vectors so requested entries can be drained directly into mapped.
+    // Collecting the drain into a temporary Vec allocated once more on the render thread
+    // every frame, even though both destination vectors already retain their capacity.
+    let GpuReadbacks { requested, mapped } = &mut *readbacks;
+    for readback in requested.drain(..) {
         let slice = readback.buffer.slice(..);
         let entity = readback.entity;
         let buffer = readback.buffer.clone();
@@ -416,7 +420,7 @@ fn map_buffers(mut readbacks: ResMut<GpuReadbacks>) {
                 debug!("Failed to send readback result: {}", e);
             }
         });
-        readbacks.mapped.push(readback);
+        mapped.push(readback);
     }
 }
 

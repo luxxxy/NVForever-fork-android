@@ -16,7 +16,7 @@ use bevy_ecs::{
     query::{Has, With},
     resource::Resource,
     schedule::IntoScheduleConfigs as _,
-    system::{Query, Res, ResMut, StaticSystemParam},
+    system::{Local, Query, Res, ResMut, StaticSystemParam},
     world::{FromWorld, World},
 };
 use bevy_encase_derive::ShaderType;
@@ -2014,13 +2014,16 @@ pub fn delete_old_work_item_buffers<GFBD>(
         BatchedInstanceBuffers<GFBD::BufferData, GFBD::BufferInputData>,
     >,
     extracted_views: Query<&ExtractedView>,
+    mut retained_view_entities: Local<HashSet<RetainedViewEntity>>,
 ) where
     GFBD: GetFullBatchData,
 {
-    let retained_view_entities: HashSet<_> = extracted_views
-        .iter()
-        .map(|extracted_view| extracted_view.retained_view_entity)
-        .collect();
+    retained_view_entities.clear();
+    retained_view_entities.extend(
+        extracted_views
+            .iter()
+            .map(|extracted_view| extracted_view.retained_view_entity),
+    );
     for phase_instance_buffers in gpu_batched_instance_buffers
         .phase_instance_buffers
         .values_mut()
@@ -2846,15 +2849,15 @@ pub fn collect_buffers_for_phase<PI, GFBD>(
 /// into one range. The indirect parameters building shader handles each batch
 /// index on its own, so one dispatch over the merged range does the same work as
 /// one dispatch per range, without a barrier between each.
-fn coalesce_batch_ranges(ranges: &[Range<u32>]) -> Vec<Range<u32>> {
-    let mut merged: Vec<Range<u32>> = Vec::with_capacity(ranges.len());
+fn coalesce_batch_ranges(ranges: &[Range<u32>], merged: &mut Vec<Range<u32>>) {
+    merged.clear();
+    merged.reserve(ranges.len());
     for range in ranges {
         match merged.last_mut() {
             Some(last) if last.end == range.start => last.end = range.end,
             _ => merged.push(range.clone()),
         }
     }
-    merged
 }
 
 /// A system, part of the render world, that gathers up the batch ranges from
@@ -2865,6 +2868,7 @@ pub fn prepare_indirect_parameters_build_jobs(
     mut build_indirect_parameters_metadata: ResMut<BuildIndirectParametersMetadata>,
     mut indirect_parameters_build_jobs: ResMut<IndirectParametersBuildJobs>,
     indirect_parameters_buffers: Res<IndirectParametersBuffers>,
+    mut merged_ranges: Local<Vec<Range<u32>>>,
 ) {
     // Make sure to clear out the indirect parameters build jobs in preparation
     // for a new frame.
@@ -2879,7 +2883,8 @@ pub fn prepare_indirect_parameters_build_jobs(
             .view_to_indirect_parameters_batch_ranges
             .iter()
         {
-            for indirect_parameters_range in coalesce_batch_ranges(indirect_parameters_ranges) {
+            coalesce_batch_ranges(indirect_parameters_ranges, &mut merged_ranges);
+            for indirect_parameters_range in &merged_ranges {
                 let uniform_offset = indirect_parameters_build_jobs.push(
                     IndirectParametersBuildJob::new(indirect_parameters_range.clone()),
                 );
@@ -2903,7 +2908,8 @@ pub fn prepare_indirect_parameters_build_jobs(
             .view_to_indirect_parameters_batch_ranges
             .iter()
         {
-            for indirect_parameters_range in coalesce_batch_ranges(indirect_parameters_ranges) {
+            coalesce_batch_ranges(indirect_parameters_ranges, &mut merged_ranges);
+            for indirect_parameters_range in &merged_ranges {
                 let uniform_offset = indirect_parameters_build_jobs.push(
                     IndirectParametersBuildJob::new(indirect_parameters_range.clone()),
                 );
@@ -3047,6 +3053,8 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
     bin_unpacking_buffers: ResMut<SceneUnpackingBuffers>,
     render_device: Res<RenderDevice>,
     render_queue: Res<RenderQueue>,
+    mut all_seen_view_entities: Local<HashSet<RetainedViewEntity>>,
+    mut representative_entity_to_batch_set_scene_unpacking_metadata: Local<MainEntityHashMap<BatchSetSceneUnpackingMetadata>>,
 ) where
     BPI: BinnedPhaseItem,
     GFBD: GetFullBatchData,
@@ -3057,7 +3065,7 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
 
     // Record all the `RetainedViewEntity` keys that we saw so that we can
     // delete buffers corresponding to views that went away.
-    let mut all_seen_view_entities = HashSet::new();
+    all_seen_view_entities.clear();
 
     for extracted_view in &mut views {
         all_seen_view_entities.insert(extracted_view.retained_view_entity);
@@ -3100,8 +3108,7 @@ pub fn write_binned_instance_buffers<BPI, GFBD>(
         // We use the *representative entity* as the key for the later loop to
         // find the `BatchSetBinUnpackingMetadata`, because it's a unique value
         // that can be fetched from the `BinnedRenderPhaseBatchSet`.
-        let mut representative_entity_to_batch_set_scene_unpacking_metadata =
-            MainEntityHashMap::default();
+        representative_entity_to_batch_set_scene_unpacking_metadata.clear();
 
         for batch_set in batch_sets {
             let main_entity = batch_set.first_batch.representative_entity.1;
@@ -3195,7 +3202,7 @@ pub fn clear_scene_unpacking_buffers(mut scene_unpacking_buffers: ResMut<SceneUn
 
 /// CPU-side metadata needed to drive the uniform allocation and bin unpacking
 /// compute shaders for a single batch set.
-struct BatchSetSceneUnpackingMetadata {
+pub struct BatchSetSceneUnpackingMetadata {
     /// The index of the first [`PreprocessWorkItem`] that the compute shader
     /// dispatch is to write to.
     base_output_work_item_index: u32,
@@ -3307,6 +3314,19 @@ mod tests {
     struct TestData(u32);
 
     impl_atomic_pod!(TestData, TestDataBlob);
+
+    #[test]
+    fn coalesce_batch_ranges_reuses_capacity_and_merges_adjacent_ranges() {
+        let mut merged = Vec::new();
+
+        coalesce_batch_ranges(&[0..2, 2..4, 7..8], &mut merged);
+        assert_eq!(merged, vec![0..4, 7..8]);
+
+        let retained_capacity = merged.capacity();
+        coalesce_batch_ranges(&[10..11, 11..15], &mut merged);
+        assert_eq!(merged, vec![10..15]);
+        assert_eq!(merged.capacity(), retained_capacity);
+    }
 
     #[test]
     fn instance_buffer_correct_behavior() {

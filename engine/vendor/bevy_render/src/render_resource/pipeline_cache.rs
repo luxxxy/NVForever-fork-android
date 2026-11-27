@@ -1208,7 +1208,11 @@ impl PipelineCache {
     /// [`RenderSystems::Render`]: crate::RenderSystems::Render
     pub fn process_queue(&mut self) {
         self.nvf_feed_manifest();
-        let mut waiting_pipelines = mem::take(&mut self.waiting_pipelines);
+        // Drain into a small inline worklist instead of mem::take-ing the HashSet.
+        // process_queue runs every render frame; replacing the set discarded its bucket
+        // allocation every frame, even when there were no pipelines waiting.
+        let mut waiting_pipelines: SmallVec<[_; 32]> =
+            self.waiting_pipelines.drain().collect();
         let mut pipelines = mem::take(&mut self.pipelines);
 
         {
@@ -1219,7 +1223,7 @@ impl PipelineCache {
             for new_pipeline in new_pipelines.drain(..) {
                 let id = pipelines.len();
                 pipelines.push(new_pipeline);
-                waiting_pipelines.insert(id);
+                waiting_pipelines.push(id);
             }
         }
 
