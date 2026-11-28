@@ -149,7 +149,7 @@ type Drawn = (
 /// Reused snapshots for the actor-group update; the system mutates the maps while
 /// processing their entries, so these lists are kept separately from the resources.
 #[derive(Default)]
-struct ActorGroupScratch {
+pub(crate) struct ActorGroupScratch {
     by_ref: HashMap<u32, Entity>,
     told: Vec<(u32, (u16, u32))>,
     waiting: Vec<u32>,
