@@ -1470,6 +1470,7 @@ const FELL_THROUGH: f32 = 1000.0;
 fn step(
     mut stroke_time: Local<f32>,
     mut walking_scratch: Local<Vec<[f32; 2]>>,
+    mut pushes_scratch: Local<Vec<crate::blocking::Push>>,
     time: Res<Time>,
     state: Res<State<PlayState>>,
     d: Res<PlayWorld>,
@@ -1512,7 +1513,7 @@ fn step(
         for _ in 0..n {
             let _tick = info_span!("phys::tick").entered();
             let began = meter.now();
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, &mut pushes_scratch, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
@@ -1554,7 +1555,7 @@ fn step(
             // Not falling: no fall, landing or fall damage while it flies.
             c.grounded = true;
             c.ground_gap = Some(0.0);
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, None, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, &mut pushes_scratch, None, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
@@ -1721,7 +1722,8 @@ fn step(
             listed = Some(all.len());
             // First the walking actors: what they push is their owner's to move, but for
             // the player, which their pushes move in this step.
-            let mut pushes: Vec<Push> = Vec::new();
+            let pushes = &mut *pushes_scratch;
+            pushes.clear();
             let mut stopped = false;
             for (v, n) in walking.iter_mut().zip(p.npcs.values()) {
                 let asked = *v;
@@ -1740,7 +1742,7 @@ fn step(
             pushes.retain(|p| p.actor != PLAYER);
             b.steps_pushing[1] += u64::from(!pushes.is_empty());
             b.steps_pushing[2] += u64::from(pushed != [0.0, 0.0]);
-            b.pushes.extend(pushes);
+            b.pushes.extend(pushes.drain(..));
             go = [go[0] + pushed[0] / dt, go[1] + pushed[1] / dt];
             let (asked, before) = (go, b.pushes.len());
             go = clip(PLAYER, go, c.feet, c.params.radius, c.params.height, dt, &mut all, &mut b.pushes);
@@ -1888,7 +1890,8 @@ fn step_npcs_alone(
     npcs: &mut std::collections::BTreeMap<u32, crate::phys::NpcBody>,
     actor_block_radii: &std::collections::HashMap<u32, f32>,
     walking: &mut Vec<[f32; 2]>,
-    player: Option<([f32; 3], f32, f32)>,
+    pushes: &mut Vec<crate::blocking::Push>,
+    player: Option<([f32; 3], f32, f32)>, 
     blocks: Option<&mut crate::blocking::ActorBlocks>,
     falls: Option<&mut crate::falls::Falls>,
     fell: &mut MessageWriter<crate::falls::Fell>,
@@ -1909,7 +1912,7 @@ fn step_npcs_alone(
             all.push(Block::character(PLAYER, feet, radius, height, false));
         }
         listed = Some(all.len());
-        let mut pushes: Vec<Push> = Vec::new();
+        pushes.clear();
         let mut stopped = false;
         for (v, n) in walking.iter_mut().zip(npcs.values()) {
             let asked = *v;
@@ -1924,7 +1927,7 @@ fn step_npcs_alone(
         b.steps_actor_blocked += u64::from(stopped);
         pushes.retain(|p| p.actor != PLAYER);
         b.steps_pushing[1] += u64::from(!pushes.is_empty());
-        b.pushes.extend(pushes);
+        b.pushes.extend(pushes.drain(..));
         all.truncate(placed);
         b.list = all;
     }
