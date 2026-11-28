@@ -975,7 +975,7 @@ fn mirror_game(
                     *vals
                 };
                 let Some(e) = entity else { continue };
-                mutate_shape_material(e, &drawn, assets.as_deref_mut(), owned, &mut made_now, &mut commands, |m| {
+                mutate_shape_material(e, &drawn, assets.as_deref_mut(), owned, made_now, &mut commands, |m| {
                     set_material(m, &vals, id);
                 });
             }
@@ -1001,7 +1001,7 @@ fn mirror_game(
                     *vals
                 };
                 let Some(e) = entity else { continue };
-                mutate_shape_material(e, &drawn, assets.as_deref_mut(), owned, &mut made_now, &mut commands, |m| {
+                mutate_shape_material(e, &drawn, assets.as_deref_mut(), owned, made_now, &mut commands, |m| {
                     set_alpha_property(m, &vals);
                 });
             }
@@ -1029,7 +1029,7 @@ fn mirror_game(
                 };
                 if item == 0 {
                     if let Some(e) = entity {
-                        mutate_shape_material(e, &drawn, assets.as_deref_mut(), owned, &mut made_now, &mut commands, |m| {
+                        mutate_shape_material(e, &drawn, assets.as_deref_mut(), owned, made_now, &mut commands, |m| {
                             set_stencil_property(m, &vals);
                         });
                     }
