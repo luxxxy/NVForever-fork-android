@@ -1712,7 +1712,7 @@ fn step(
             n.ch.passes_characters = blocks.is_some();
         }
         if let Some(b) = blocks.as_deref_mut() {
-            use crate::blocking::{clip, Block, Push, PLAYER};
+            use crate::blocking::{clip, Block, PLAYER};
             b.player_held = (b.player_held - dt).max(0.0);
             let standing = go == [0.0, 0.0] && c.grounded && !c.swimming && b.player_held <= dt * 0.5;
             let placed = b.list.len();
@@ -1891,12 +1891,12 @@ fn step_npcs_alone(
     actor_block_radii: &std::collections::HashMap<u32, f32>,
     walking: &mut Vec<[f32; 2]>,
     pushes: &mut Vec<crate::blocking::Push>,
-    player: Option<([f32; 3], f32, f32)>, 
+    player: Option<([f32; 3], f32, f32)>,
     blocks: Option<&mut crate::blocking::ActorBlocks>,
     falls: Option<&mut crate::falls::Falls>,
     fell: &mut MessageWriter<crate::falls::Fell>,
 ) -> Option<usize> {
-    use crate::blocking::{clip, Block, Push, PLAYER};
+    use crate::blocking::{clip, Block, PLAYER};
     let dt = world.params.dt;
     let mut listed = None;
     walking.clear();
