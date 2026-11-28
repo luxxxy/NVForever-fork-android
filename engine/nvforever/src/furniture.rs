@@ -599,8 +599,9 @@ pub fn drive_actors(
     // the stool stayed "in use" by its own sitter, who then stood in it].
     scratch.live.clear();
     scratch.live.extend(using.iter().map(|(_, _, _, on, ..)| on.who.reference));
-    f.forget_gone(&scratch.live, &mut scratch.gone);
-    for &(furniture, user) in &scratch.gone {
+    let ActorFurnitureScratch { live, gone } = &mut *scratch;
+    f.forget_gone(live, gone);
+    for &(furniture, user) in gone.iter() {
         info!("furniture: {user:08X} is off {furniture:08X} unseen (no longer drawn)");
         tell_scripts(&mut script, user, None);
     }
