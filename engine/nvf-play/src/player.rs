@@ -1512,7 +1512,7 @@ fn step(
         for _ in 0..n {
             let _tick = info_span!("phys::tick").entered();
             let began = meter.now();
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, &mut pushes_scratch, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut movement_scratch.0, &mut movement_scratch.1, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
