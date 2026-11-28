@@ -72,6 +72,13 @@ struct Memory {
     props: HashMap<String, HashMap<String, Props>>,
     /// Each model's node tree as its file holds it, for items drawn as flat shapes.
     files: HashMap<String, Vec<FileNode>>,
+    // Per-frame mirror scratch: retain collection capacity between ECS updates.
+    watched: Vec<FormId>,
+    seen_watched: HashSet<u32>,
+    wanted: Vec<(FormId, String)>,
+    wanted_refs: HashSet<u32>,
+    edits_rest: Vec<(ModelView, SceneEdit, Option<Entity>)>,
+    made_now: HashMap<Entity, Handle<NifMaterial>>,
 }
 
 /// A node of a model file: its name, its parent's index, its local transform.
@@ -739,14 +746,21 @@ fn mirror_game(
     (globals, boxes, mut particles, world, sim): Extra,
     dropped: Dropped,
 ) {
-    let Memory { logged, held, bound_held, pending_held, edit_order, tables, materials, alpha_props, stencil_props, owned, attachment_materials, attachment_alpha, attachment_stencil, props, files } = mem;
+    let Memory {
+        logged, held, bound_held, pending_held, edit_order, tables, materials,
+        alpha_props, stencil_props, owned, attachment_materials, attachment_alpha,
+        attachment_stencil, props, files, watched, seen_watched, wanted,
+        wanted_refs, edits_rest, made_now,
+    } = mem;
     game.scene.use_separate_player_models();
     let edits = game.scene.take_targeted_edits();
     // Collect watched refs and wanted vertices upfront so a single per-frame pass
     // indexes rigs, flat drops, and RefVisual roots for every ref touched this frame.
-    let mut watched: Vec<FormId> = game.scene.watched().collect();
+    watched.clear();
+    watched.extend(game.scene.watched());
     if !watched.is_empty() {
-        let mut seen_watched: HashSet<u32> = watched.iter().map(|r| r.0).collect();
+        seen_watched.clear();
+        seen_watched.extend(watched.iter().map(|r| r.0));
         let created = rigs.0.iter().map(|(_, a)| a.reference).filter(|r| r >> 24 == 0xFF).chain(dropped.0.iter().map(|(d, _, _)| d.0));
         for r in std::iter::once(FormId::PLAYER_REF.0).chain(created) {
             if seen_watched.insert(r) {
@@ -754,8 +768,10 @@ fn mirror_game(
             }
         }
     }
-    let wanted: Vec<(FormId, String)> = game.scene.wanted_vertices().cloned().collect();
-    let mut wanted_refs: HashSet<u32> = HashSet::with_capacity(
+    wanted.clear();
+    wanted.extend(game.scene.wanted_vertices().cloned());
+    wanted_refs.clear();
+    wanted_refs.reserve(
         edits.len() + held.len() + pending_held.len() + bound_held.len() + watched.len() + wanted.len(),
     );
     for queued in &edits {
@@ -769,7 +785,7 @@ fn mirror_game(
     wanted_refs.extend(watched.iter().map(|r| r.0));
     wanted_refs.extend(wanted.iter().map(|(r, _)| r.0));
     let index = MirrorIndex::build(&wanted_refs, &rigs, &visuals, &dropped);
-    let mut edits_rest = Vec::new();
+    edits_rest.clear();
     for queued in edits {
         let (view, edit) = queued.edit.into_model();
         let Some(r) = edit_ref(&edit) else { continue };
@@ -830,8 +846,8 @@ fn mirror_game(
         edits_rest.push((view, edit, Some(entity)));
     }
     // The private material copies made in this drain, by shape (`SceneEdit::Material`).
-    let mut made_now: HashMap<Entity, Handle<NifMaterial>> = HashMap::new();
-    for (view, edit, entity) in edits_rest {
+    made_now.clear();
+    for (view, edit, entity) in edits_rest.drain(..) {
         let Some(r) = edit_ref(&edit) else { continue };
         let Some(root) = index.root_of(r.0, view) else { continue };
         let rig = index.rig_names(r.0, view);
@@ -1077,7 +1093,7 @@ fn mirror_game(
     // set's first reads of the player, of Doc's copy and of the pistol, #2132]. Any other
     // reference is told from the frame after a script first asks about it. A game whose
     // scripts never use them walks no tree here.
-    for r in watched {
+    for r in watched.iter().copied() {
         if let Some(model) = index.drawn_flat(r.0) {
             let Some(d) = data.as_deref() else { continue };
             let file = files.entry(model.to_string()).or_insert_with(|| file_tree(d, model));
@@ -1225,7 +1241,7 @@ fn mirror_game(
     // The vertices of the shapes scripts asked about (SUP's NifBlockGetVerticles), in the
     // shape's own space as its mesh holds them; none for a mesh kept on the GPU only
     // [hypothesis: a skinned shape's are its bind pose].
-    for (r, node) in wanted {
+    for (r, node) in wanted.drain(..) {
         let view = concrete_view(r.0, ModelView::Reference);
         let verts = index
             .root_of(r.0, view)
