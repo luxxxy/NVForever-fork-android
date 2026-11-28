@@ -146,6 +146,15 @@ type Drawn = (
     Option<&'static WeaponHold>,
 );
 
+/// Reused snapshots for the actor-group update; the system mutates the maps while
+/// processing their entries, so these lists are kept separately from the resources.
+#[derive(Default)]
+struct ActorGroupScratch {
+    by_ref: HashMap<u32, Entity>,
+    told: Vec<(u32, (u16, u32))>,
+    waiting: Vec<u32>,
+}
+
 /// Take the actors' requests and play them; tell the rules when a group ends.
 #[allow(clippy::too_many_arguments)]
 pub fn drive(
@@ -155,6 +164,7 @@ pub fn drive(
     parts: Option<ResMut<ActorParts>>,
     mut models: ModelCtx,
     mut actors: Query<Drawn>,
+    mut scratch: Local<ActorGroupScratch>,
 ) {
     let st = &mut *st;
     let Some(rt) = script.as_deref_mut().and_then(|s| s.rt.as_mut()) else {
@@ -162,12 +172,14 @@ pub fn drive(
         return;
     };
     let game = &mut rt.game;
-    let by_ref: HashMap<u32, Entity> = actors.iter().map(|(e, r, ..)| (r.reference, e)).collect();
+    scratch.by_ref.clear();
+    scratch.by_ref.extend(actors.iter().map(|(e, r, ..)| (r.reference, e)));
 
     // Groups that ended, were replaced, or that the actor walked out of; flag-0 requests
-    // whose turn came.
-    let told: Vec<(u32, (u16, u32))> = st.told.iter().map(|(a, t)| (*a, *t)).collect();
-    for (actor, (group, serial)) in told {
+    // whose turn came. Snapshot into retained buffers because these maps are mutated below.
+    scratch.told.clear();
+    scratch.told.extend(st.told.iter().map(|(a, t)| (*a, *t)));
+    for (actor, (group, serial)) in scratch.told.iter().copied() {
         let slot = by_ref.get(&actor).and_then(|e| actors.get_mut(*e).ok());
         let Some((_, _, Some(mut idle), lo, _)) = slot else {
             st.told.remove(&actor);
@@ -190,8 +202,9 @@ pub fn drive(
             debug!("actor group: {} ends {}", game.data.name(FormId(actor)), game.anim_group_name(group).unwrap_or_default());
         }
     }
-    let waiting: Vec<u32> = st.waiting.keys().copied().collect();
-    for actor in waiting {
+    scratch.waiting.clear();
+    scratch.waiting.extend(st.waiting.keys().copied());
+    for actor in scratch.waiting.iter().copied() {
         let Some(&e) = by_ref.get(&actor) else {
             if let Some((r, _)) = st.waiting.remove(&actor) {
                 game.anims.set_playing(r.on, None);
