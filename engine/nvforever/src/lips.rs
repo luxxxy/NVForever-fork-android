@@ -548,6 +548,8 @@ pub struct LipState {
     speaking: HashMap<FormId, Speaking>,
     /// Per-frame scratch buffers retained across updates to avoid repeated heap allocation.
     spoken_scratch: Vec<(FormId, String, f64, f64, f64, FormId, usize)>,
+    /// First active response per speaker, indexing `spoken_scratch` for constant-time clock lookup.
+    spoken_by_speaker: HashMap<FormId, usize>,
     over_scratch: Vec<FormId>,
     gone_scratch: Vec<u32>,
     /// (speaker, path, start) of the response last looked at per speaker, animated or
@@ -602,6 +604,7 @@ impl LipState {
             faces: HashMap::new(),
             speaking: HashMap::new(),
             spoken_scratch: Vec::new(),
+            spoken_by_speaker: HashMap::new(),
             over_scratch: Vec::new(),
             gone_scratch: Vec::new(),
             seen: HashMap::new(),
@@ -831,6 +834,12 @@ fn drive(
     if st.enabled {
         spoken.extend(voice.spoken().filter_map(|s| Some((s.speaker, s.path?.to_string(), s.started_at, s.ends_at, s.held_secs, s.info, s.response))));
     }
+    st.spoken_by_speaker.clear();
+    for (index, (speaker, ..)) in spoken.iter().enumerate() {
+        // Preserve the previous `.find()` behavior if the voice source ever reports
+        // more than one active response for a speaker: the first one wins.
+        st.spoken_by_speaker.entry(*speaker).or_insert(index);
+    }
 
     // Responses that started: animate them, or say why not.
     for (speaker, path, started_at, ends_at, _, info, response) in &spoken {
@@ -917,7 +926,8 @@ fn drive(
     let mut over = std::mem::take(&mut st.over_scratch);
     over.clear();
     for (speaker, sp) in st.speaking.iter_mut() {
-        let now_said = spoken.iter().find(|(s, p, t, ..)| s == speaker && *p == sp.path && *t == sp.started_at);
+        let now_said = st.spoken_by_speaker.get(speaker).and_then(|&index| spoken.get(index))
+            .filter(|(s, p, t, ..)| s == speaker && *p == sp.path && *t == sp.started_at);
         if let Some((_, _, _, ends_at, held_secs, ..)) = now_said {
             (sp.ends_at, sp.held_secs) = (*ends_at, *held_secs);
         }
