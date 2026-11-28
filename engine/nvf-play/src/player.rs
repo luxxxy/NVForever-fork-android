@@ -1705,7 +1705,7 @@ fn step(
         let blocks_span = info_span!("phys::blocks").entered();
         let mut listed = None;
         let mut go = [vx, vy];
-        let (walking, pushes) = (walking_scratch, pushes_scratch);
+        let (walking, pushes) = (&mut *walking_scratch, &mut *pushes_scratch);
         walking.clear();
         walking.extend(p.npcs.values().map(|b| b.velocity));
         let mut pushed = [0.0f32; 2];
