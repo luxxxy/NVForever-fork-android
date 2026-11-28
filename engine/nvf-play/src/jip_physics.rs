@@ -85,13 +85,14 @@ fn apply(
     }
     p.world.update_queries();
     for r in watched.iter().copied() {
-        let view = view_of(p, r);
+        let previous = g.take_phys_view(r).unwrap_or_default();
+        let view = view_of(p, r, previous);
         g.set_phys_view(r, view);
     }
 }
 
 /// A reference's physics as the scripts see it; `None` when it has none.
-fn view_of(p: &mut PhysState, r: FormId) -> Option<PhysView> {
+fn view_of(p: &mut PhysState, r: FormId, mut view: PhysView) -> Option<PhysView> {
     let ch = if r == FormId::PLAYER_REF { p.player.as_ref() } else { p.npcs.get(&r.0).map(|n| &n.ch) };
     let ground = ch.and_then(|c| {
         if !c.grounded {
@@ -110,11 +111,9 @@ fn view_of(p: &mut PhysState, r: FormId) -> Option<PhysView> {
             None => (None, None),
         })
     });
-    let bodies: Vec<PhysBody> = p
-        .world
-        .script_bodies(r.0)
-        .into_iter()
-        .map(|b| PhysBody {
+    view.bodies.clear();
+    p.world.for_each_script_body(r.0, |b| {
+        view.bodies.push(PhysBody {
             node: b.node,
             layer: b.layer,
             dynamic: b.dynamic,
@@ -127,23 +126,27 @@ fn view_of(p: &mut PhysState, r: FormId) -> Option<PhysView> {
             linear_damping: b.linear_damping,
             angular_damping: b.angular_damping,
             inertia: b.inertia,
-        })
-        .collect();
-    if bodies.is_empty() && ch.is_none() {
+        });
+    });
+    if view.bodies.is_empty() && ch.is_none() {
         return None;
     }
-    let mut contacts: Vec<FormId> = p
-        .world
-        .ref_contacts(r.0)
-        .into_iter()
-        .filter(|(_, _, d)| *d <= 0.5)
-        .filter_map(|(_, o, _)| match o? {
-            Owner::Ref { form_id, .. } | Owner::Actor { form_id, .. } if form_id != r.0 => Some(FormId(form_id)),
-            _ => None,
-        })
-        .collect();
-    contacts.sort();
-    contacts.dedup();
-    let grabbable = ch.is_none() && bodies.iter().any(|b| b.dynamic) && p.world.ref_mass(r.0).is_some_and(|m| m <= GRAB_MAX_MASS);
-    Some(PhysView { bodies, contacts, grabbable, ground, phantom: false })
+    view.contacts.clear();
+    p.world.for_each_ref_contact(r.0, |_, owner, distance| {
+        if distance <= 0.5 {
+            if let Some(Owner::Ref { form_id, .. } | Owner::Actor { form_id, .. }) = owner {
+                if form_id != r.0 {
+                    view.contacts.push(FormId(form_id));
+                }
+            }
+        }
+    });
+    view.contacts.sort();
+    view.contacts.dedup();
+    view.grabbable = ch.is_none()
+        && view.bodies.iter().any(|b| b.dynamic)
+        && p.world.ref_mass(r.0).is_some_and(|m| m <= GRAB_MAX_MASS);
+    view.ground = ground;
+    view.phantom = false;
+    Some(view)
 }
