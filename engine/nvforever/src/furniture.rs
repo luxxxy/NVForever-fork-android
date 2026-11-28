@@ -180,7 +180,7 @@ pub struct Stats {
 
 /// Per-frame scratch storage for the furniture actor system.
 #[derive(Default)]
-struct ActorFurnitureScratch {
+pub(crate) struct ActorFurnitureScratch {
     live: std::collections::HashSet<u32>,
     gone: Vec<(u32, u32)>,
 }
@@ -1088,11 +1088,14 @@ mod tests {
         // Easy Pete is still on his chair; the settler's visual went away; the player's
         // use is the player's module's.
         let live = std::collections::HashSet::from([0x0010_4C80]);
-        assert_eq!(f.forget_gone(&live), vec![(0x0010_6192, 0x0010_4F08)]);
+        let mut gone = Vec::new();
+        f.forget_gone(&live, &mut gone);
+        assert_eq!(gone, vec![(0x0010_6192, 0x0010_4F08)]);
         assert!(!f.users.contains_key(&0x0010_6192));
         assert_eq!(f.users[&0x0010_634A], vec![(2, 0x0010_4C80)]);
         assert_eq!(f.users[&0x0017_6ACE], vec![(0, player)]);
-        assert!(f.forget_gone(&live).is_empty());
+        f.forget_gone(&live, &mut gone);
+        assert!(gone.is_empty());
     }
 
     #[test]
