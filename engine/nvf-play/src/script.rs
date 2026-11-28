@@ -2679,13 +2679,16 @@ pub(crate) fn run_scripts(
         }
         rt.game.cfg.frame_seconds = dt;
         // Scripts' GetFallTimeElapsed (`fnv_game::nvse_gaps`).
-        rt.game.gaps.air_times = phys
-            .player
-            .iter()
-            .map(|c| (FormId::PLAYER_REF, c.air_time))
-            .chain(phys.npcs.iter().map(|(&r, b)| (FormId(r), b.ch.air_time)))
-            .filter(|(_, t)| *t > 0.0)
-            .collect();
+        // Refill the existing map instead of replacing it with a freshly collected
+        // HashMap every script frame; retain its allocation as actors move in and out.
+        rt.game.gaps.air_times.clear();
+        rt.game.gaps.air_times.extend(
+            phys.player
+                .iter()
+                .map(|c| (FormId::PLAYER_REF, c.air_time))
+                .chain(phys.npcs.iter().map(|(&r, b)| (FormId(r), b.ch.air_time)))
+                .filter(|(_, t)| *t > 0.0),
+        );
         with_ray_caster(&mut phys, &play.0, location.world, || rt.game.tick());
         apply_pushes(&mut rt.game, &mut phys);
         rt.ticked = true;
