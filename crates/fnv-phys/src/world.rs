@@ -1052,12 +1052,13 @@ impl PhysWorld {
         self.refs.get(&form_id).into_iter().flatten().map(|&b| spin(&self.w.bodies[b])).collect()
     }
 
-    /// The deepest contact of each pair the reference's colliders are in, as of the last
-    /// narrow-phase update: the index of the reference's body, what the other collider
-    /// belongs to and the contact's distance in game units (negative: overlapping by that
-    /// much). Diagnostics: an overlap at placement shows what pushes a body apart.
-    pub fn ref_contacts(&self, form_id: u32) -> Vec<(usize, Option<Owner>, f32)> {
-        let mut out = Vec::new();
+    /// Visit each deepest contact pair of a reference's colliders, as of the last
+    /// narrow-phase update. The callback form avoids a temporary Vec in per-frame callers.
+    pub fn for_each_ref_contact(
+        &self,
+        form_id: u32,
+        mut visit: impl FnMut(usize, Option<Owner>, f32),
+    ) {
         for (i, &b) in self.refs.get(&form_id).into_iter().flatten().enumerate() {
             let Some(body) = self.w.bodies.get(b) else { continue };
             for &c in body.colliders() {
@@ -1065,10 +1066,19 @@ impl PhysWorld {
                     let other = if pair.collider1 == c { pair.collider2 } else { pair.collider1 };
                     let Some((_, contact)) = pair.find_deepest_contact() else { continue };
                     let owner = self.w.colliders.get(other).and_then(|o| Owner::decode(o.user_data));
-                    out.push((i, owner, contact.dist / self.k));
+                    visit(i, owner, contact.dist / self.k);
                 }
             }
         }
+    }
+
+    /// The deepest contact of each pair the reference's colliders are in, as of the last
+    /// narrow-phase update: the index of the reference's body, what the other collider
+    /// belongs to and the contact's distance in game units (negative: overlapping by that
+    /// much). Diagnostics: an overlap at placement shows what pushes a body apart.
+    pub fn ref_contacts(&self, form_id: u32) -> Vec<(usize, Option<Owner>, f32)> {
+        let mut out = Vec::new();
+        self.for_each_ref_contact(form_id, |i, owner, distance| out.push((i, owner, distance)));
         out
     }
 
