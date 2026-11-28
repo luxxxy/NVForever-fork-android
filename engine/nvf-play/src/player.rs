@@ -1469,6 +1469,7 @@ const FELL_THROUGH: f32 = 1000.0;
 #[allow(clippy::too_many_arguments)]
 fn step(
     mut stroke_time: Local<f32>,
+    mut walking_scratch: Local<Vec<[f32; 2]>>,
     time: Res<Time>,
     state: Res<State<PlayState>>,
     d: Res<PlayWorld>,
@@ -1701,7 +1702,9 @@ fn step(
         let blocks_span = info_span!("phys::blocks").entered();
         let mut listed = None;
         let mut go = [vx, vy];
-        let mut walking: Vec<[f32; 2]> = p.npcs.values().map(|b| b.velocity).collect();
+        let walking = &mut *walking_scratch;
+        walking.clear();
+        walking.extend(p.npcs.values().map(|b| b.velocity));
         let mut pushed = [0.0f32; 2];
         c.passes_characters = blocks.is_some();
         for n in p.npcs.values_mut() {
@@ -1839,7 +1842,7 @@ fn step(
 fn move_npcs(
     world: &mut fnv_phys::PhysWorld,
     npcs: &mut std::collections::BTreeMap<u32, crate::phys::NpcBody>,
-    walking: Vec<[f32; 2]>,
+    walking: &mut Vec<[f32; 2]>, 
     mut falls: Option<&mut crate::falls::Falls>,
     fell: &mut MessageWriter<crate::falls::Fell>,
     dt: f32,
@@ -1847,7 +1850,7 @@ fn move_npcs(
     let plan_span = info_span!("phys::npc_plan").entered();
     world.update_queries_for(fnv_phys::QueryConsumer::Npc);
     let reader = &*world;
-    let mut moving: Vec<(u32, &mut crate::phys::NpcBody, [f32; 2])> = npcs.iter_mut().zip(walking).map(|((&id, b), v)| (id, b, v)).collect();
+    let mut moving: Vec<(u32, &mut crate::phys::NpcBody, [f32; 2])> = npcs.iter_mut().zip(walking.iter().copied()).map(|((&id, b), v)| (id, b, v)).collect();
     let plan = |b: &mut crate::phys::NpcBody, v: [f32; 2]| {
         b.prev_feet = b.ch.feet;
         let was_footing = crate::phys::step_lift::footing(&b.ch);
