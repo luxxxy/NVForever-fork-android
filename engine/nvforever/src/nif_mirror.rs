@@ -784,7 +784,7 @@ fn mirror_game(
     wanted_refs.extend(bound_held.keys().map(|(r, _, _)| *r));
     wanted_refs.extend(watched.iter().map(|r| r.0));
     wanted_refs.extend(wanted.iter().map(|(r, _)| r.0));
-    let index = MirrorIndex::build(&wanted_refs, &rigs, &visuals, &dropped);
+    let index = MirrorIndex::build(wanted_refs, &rigs, &visuals, &dropped);
     edits_rest.clear();
     for queued in edits {
         let (view, edit) = queued.edit.into_model();
