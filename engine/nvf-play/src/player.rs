@@ -1493,6 +1493,9 @@ fn step(
         // menu, and a frame later back where it was.)
         return;
     }
+    // Split the tuple borrow once: taking each field through Local separately makes the
+    // borrow checker treat the second field as a second mutable borrow of the whole Local.
+    let (walking_scratch, pushes_scratch) = &mut *movement_scratch;
     // Measuring: the frame's time, always, for the physics rate's guard (`PhysRate`); with
     // `--log-frame-times` each step's time and the counts too, into `PhysLoad`.
     let mut meter = crate::phys_load::Meter::start(load.as_deref_mut(), rate.as_deref_mut());
@@ -1512,7 +1515,7 @@ fn step(
         for _ in 0..n {
             let _tick = info_span!("phys::tick").entered();
             let began = meter.now();
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut movement_scratch.0, &mut movement_scratch.1, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, walking_scratch, pushes_scratch, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
@@ -1554,7 +1557,7 @@ fn step(
             // Not falling: no fall, landing or fall damage while it flies.
             c.grounded = true;
             c.ground_gap = Some(0.0);
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut movement_scratch.0, &mut movement_scratch.1, None, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, walking_scratch, pushes_scratch, None, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
@@ -1702,7 +1705,7 @@ fn step(
         let blocks_span = info_span!("phys::blocks").entered();
         let mut listed = None;
         let mut go = [vx, vy];
-        let (walking, pushes) = &mut *movement_scratch;
+        let (walking, pushes) = (walking_scratch, pushes_scratch);
         walking.clear();
         walking.extend(p.npcs.values().map(|b| b.velocity));
         let mut pushed = [0.0f32; 2];
