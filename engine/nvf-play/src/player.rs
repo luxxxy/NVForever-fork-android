@@ -1891,7 +1891,7 @@ fn step_npcs_alone(
     npcs: &mut std::collections::BTreeMap<u32, crate::phys::NpcBody>,
     actor_block_radii: &std::collections::HashMap<u32, f32>,
     walking: &mut Vec<[f32; 2]>,
-    mut pushes: &mut Vec<crate::blocking::Push>,
+    pushes: &mut Vec<crate::blocking::Push>,
     player: Option<([f32; 3], f32, f32)>,
     blocks: Option<&mut crate::blocking::ActorBlocks>,
     falls: Option<&mut crate::falls::Falls>,
