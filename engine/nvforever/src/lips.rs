@@ -550,6 +550,8 @@ pub struct LipState {
     spoken_scratch: Vec<(FormId, String, f64, f64, f64, FormId, usize)>,
     /// First active response per speaker, indexing `spoken_scratch` for constant-time clock lookup.
     spoken_by_speaker: HashMap<FormId, usize>,
+    /// FaceMorphs requests, reused across actors and frames.
+    asked_scratch: Vec<(usize, f32)>,
     over_scratch: Vec<FormId>,
     gone_scratch: Vec<u32>,
     /// (speaker, path, start) of the response last looked at per speaker, animated or
@@ -605,6 +607,7 @@ impl LipState {
             speaking: HashMap::new(),
             spoken_scratch: Vec::new(),
             spoken_by_speaker: HashMap::new(),
+            asked_scratch: Vec::new(),
             over_scratch: Vec::new(),
             gone_scratch: Vec::new(),
             seen: HashMap::new(),
@@ -764,8 +767,8 @@ type Rigs<'w, 's> =
 
 /// The slots and weights an actor's [`FaceMorphs`] asks for (labels `lips.rs` does not
 /// know are left out and named in `unknown`).
-fn asked(m: &FaceMorphs, unknown: &mut HashSet<&'static str>) -> Vec<(usize, f32)> {
-    let mut out = Vec::new();
+fn asked(m: &FaceMorphs, unknown: &mut HashSet<&'static str>, out: &mut Vec<(usize, f32)>) {
+    out.clear();
     for (&label, &w) in &m.0 {
         match slot(label) {
             Some(s) if morph_slot(s) => out.push((s, w.clamp(0.0, 1.0))),
@@ -778,7 +781,6 @@ fn asked(m: &FaceMorphs, unknown: &mut HashSet<&'static str>) -> Vec<(usize, f32
             }
         }
     }
-    out
 }
 
 /// Whether slot `s` is an expression or a mood: the class a line's emotion takes over
@@ -1015,14 +1017,15 @@ fn drive(
         let far = cam.is_none_or(|c| g.translation().distance_squared(c) > IDLE_RELEASE_SQUARED);
         let asks = st.enabled && face.held.is_none() && !far && morphs.is_some_and(|m| !m.is_empty());
         if asks {
-            let list = asked(morphs.expect("asks"), &mut st.unknown_labels);
+            asked(morphs.expect("asks"), &mut st.unknown_labels, &mut st.asked_scratch);
+            let list = &st.asked_scratch;
             if st.asked_shown.insert(reference) {
                 let carried = |s: usize| face.shapes.iter().any(|m| m.morphs.iter().any(|(ms, _)| *ms == s));
                 let names: Vec<String> = list.iter().map(|&(s, x)| format!("{} {x:.2}{}", slot_name(s), if carried(s) { "" } else { " (no morph)" })).collect();
                 info!("face: {reference:08X} shows asked morphs: {}", names.join(", "));
             }
             let mut head: Weights = [0.0; SLOTS];
-            for (s, x) in list {
+            for &(s, x) in list {
                 if (HEAD_PITCH..=HEAD_YAW).contains(&s) {
                     head[s] = x;
                 } else if !(st.emotions_off && expression_class(s)) {
@@ -1359,7 +1362,9 @@ mod tests {
         m.set("CombatAnger", 1.5);
         m.set("Nose", 1.0);
         let mut unknown = HashSet::new();
-        assert_eq!(asked(&m, &mut unknown), vec![(slot("CombatAnger").unwrap(), 1.0)]);
+        let mut asked = Vec::new();
+        asked(&m, &mut unknown, &mut asked);
+        assert_eq!(asked, vec![(slot("CombatAnger").unwrap(), 1.0)]);
         assert!(unknown.contains("Nose"));
     }
 
