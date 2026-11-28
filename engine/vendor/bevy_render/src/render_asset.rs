@@ -394,14 +394,18 @@ pub fn prepare_assets<A: RenderAsset>(
     mut extracted_assets: ResMut<ExtractedAssets<A>>,
     mut render_assets: ResMut<RenderAssets<A>>,
     mut prepare_next_frame: ResMut<PrepareNextFrameAssets<A>>,
+    mut queued_assets: Local<Vec<(AssetId<A::SourceAsset>, A::SourceAsset)>>,
     param: StaticSystemParam<<A as RenderAsset>::Param>,
     bpf: Res<RenderAssetBytesPerFrameLimiter>,
 ) {
     let mut wrote_asset_count = 0;
 
     let mut param = param.into_inner();
-    let queued_assets = core::mem::take(&mut prepare_next_frame.assets);
-    for (id, extracted_asset) in queued_assets {
+    // Keep a second buffer for deferred assets. Taking the resource's Vec directly
+    // drops its allocation at the end of this system; swapping with Local lets both
+    // buffers retain capacity across frames.
+    core::mem::swap(&mut *queued_assets, &mut prepare_next_frame.assets);
+    for (id, extracted_asset) in queued_assets.drain(..) {
         if extracted_assets.removed.contains(&id) || extracted_assets.added.contains(&id) {
             // skip previous frame's assets that have been removed or updated
             continue;

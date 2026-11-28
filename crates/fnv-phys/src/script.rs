@@ -69,40 +69,44 @@ impl PhysWorld {
         self.ref_nodes.get(&form_id)?.get(i)?.as_deref()
     }
 
+    /// Visit the reference's bodies as scripts see them, in their list's order.
+    /// The callback form lets per-frame callers fill a retained output buffer directly.
+    pub fn for_each_script_body(&self, form_id: u32, mut visit: impl FnMut(ScriptBody)) {
+        let k = self.k;
+        let Some(bodies) = self.refs.get(&form_id) else { return };
+        for (i, &h) in bodies.iter().enumerate() {
+            let Some(b) = self.w.bodies.get(h) else { continue };
+            let layer = match Owner::decode(b.user_data) {
+                Some(Owner::Ref { layer, .. }) => layer,
+                _ => 0,
+            };
+            let c = b.colliders().first().and_then(|&c| self.w.colliders.get(c));
+            let p = b.position();
+            let rotation = rapier3d::math::Matrix::from_quat(p.rotation).transpose().to_cols_array();
+            let props = b.mass_properties().local_mprops;
+            let dynamic = b.is_dynamic();
+            visit(ScriptBody {
+                node: self.ref_nodes.get(&form_id).and_then(|v| v.get(i)).cloned().flatten(),
+                layer,
+                dynamic,
+                linvel: arr(b.linvel() / k),
+                angvel: arr(b.angvel()),
+                rotation,
+                mass: if dynamic { b.mass() } else { 0.0 },
+                friction: c.map_or(0.0, |c| c.friction()),
+                restitution: c.map_or(0.0, |c| c.restitution()),
+                linear_damping: b.linear_damping(),
+                angular_damping: b.angular_damping(),
+                inertia: if dynamic { arr(props.principal_inertia()) } else { [0.0; 3] },
+            });
+        }
+    }
+
     /// The reference's bodies as scripts see them, in its list's order.
     pub fn script_bodies(&self, form_id: u32) -> Vec<ScriptBody> {
-        let k = self.k;
-        let Some(bodies) = self.refs.get(&form_id) else { return Vec::new() };
-        bodies
-            .iter()
-            .enumerate()
-            .filter_map(|(i, &h)| {
-                let b = self.w.bodies.get(h)?;
-                let layer = match Owner::decode(b.user_data) {
-                    Some(Owner::Ref { layer, .. }) => layer,
-                    _ => 0,
-                };
-                let c = b.colliders().first().and_then(|&c| self.w.colliders.get(c));
-                let p = b.position();
-                let rotation = rapier3d::math::Matrix::from_quat(p.rotation).transpose().to_cols_array();
-                let props = b.mass_properties().local_mprops;
-                let dynamic = b.is_dynamic();
-                Some(ScriptBody {
-                    node: self.ref_nodes.get(&form_id).and_then(|v| v.get(i)).cloned().flatten(),
-                    layer,
-                    dynamic,
-                    linvel: arr(b.linvel() / k),
-                    angvel: arr(b.angvel()),
-                    rotation,
-                    mass: if dynamic { b.mass() } else { 0.0 },
-                    friction: c.map_or(0.0, |c| c.friction()),
-                    restitution: c.map_or(0.0, |c| c.restitution()),
-                    linear_damping: b.linear_damping(),
-                    angular_damping: b.angular_damping(),
-                    inertia: if dynamic { arr(props.principal_inertia()) } else { [0.0; 3] },
-                })
-            })
-            .collect()
+        let mut out = Vec::new();
+        self.for_each_script_body(form_id, |body| out.push(body));
+        out
     }
 
     /// Set the linear velocity (game units a second) and the angular one (radians a

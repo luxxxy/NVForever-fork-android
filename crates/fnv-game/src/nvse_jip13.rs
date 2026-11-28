@@ -232,6 +232,12 @@ impl Game<'_> {
         self.other.jip13.watched.iter().copied()
     }
 
+    /// Take a watched reference's previous physics view so the engine can reuse its
+    /// owned body/contact vector capacities while refreshing it.
+    pub fn take_phys_view(&mut self, r: FormId) -> Option<PhysView> {
+        self.other.jip13.views.remove(&r)
+    }
+
     /// A watched reference's physics this frame (`None`: not in the physics world).
     pub fn set_phys_view(&mut self, r: FormId, v: Option<PhysView>) {
         match v {

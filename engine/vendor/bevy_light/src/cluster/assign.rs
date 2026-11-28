@@ -178,6 +178,7 @@ pub(crate) fn assign_objects_to_clusters(
     decals_query: Query<(Entity, &GlobalTransform, &ViewVisibility), With<ClusteredDecal>>,
     mut clusterable_objects: Local<Vec<ClusterableObjectAssignmentData>>,
     mut cluster_aabb_spheres: Local<Vec<Option<Sphere>>>,
+    mut cluster_planes: Local<(Vec<HalfSpace>, Vec<HalfSpace>, Vec<HalfSpace>)>,
     mut max_clusterable_objects_warning_emitted: Local<bool>,
     global_cluster_settings: Option<Res<GlobalClusterSettings>>,
 ) {
@@ -428,10 +429,15 @@ pub(crate) fn assign_objects_to_clusters(
             cluster_aabb_spheres.clear();
             cluster_aabb_spheres.extend(core::iter::repeat_n(None, cluster_count));
 
-            // Calculate the x/y/z cluster frustum planes in view space
-            let mut x_planes = Vec::with_capacity(clusters.dimensions.x as usize + 1);
-            let mut y_planes = Vec::with_capacity(clusters.dimensions.y as usize + 1);
-            let mut z_planes = Vec::with_capacity(clusters.dimensions.z as usize + 1);
+            // Reuse the plane buffers across frames; CPU clustering runs on devices
+            // without the GPU clustering path, so avoid three fresh allocations per view.
+            let (x_planes, y_planes, z_planes) = &mut *cluster_planes;
+            x_planes.clear();
+            y_planes.clear();
+            z_planes.clear();
+            x_planes.reserve(clusters.dimensions.x as usize + 1);
+            y_planes.reserve(clusters.dimensions.y as usize + 1);
+            z_planes.reserve(clusters.dimensions.z as usize + 1);
 
             if is_orthographic {
                 let x_slices = clusters.dimensions.x as f32;
