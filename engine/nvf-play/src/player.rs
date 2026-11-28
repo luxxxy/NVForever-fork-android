@@ -1743,7 +1743,7 @@ fn step(
             pushes.retain(|p| p.actor != PLAYER);
             b.steps_pushing[1] += u64::from(!pushes.is_empty());
             b.steps_pushing[2] += u64::from(pushed != [0.0, 0.0]);
-            b.pushes.extend(pushes.drain(..));
+            b.pushes.append(pushes);
             go = [go[0] + pushed[0] / dt, go[1] + pushed[1] / dt];
             let (asked, before) = (go, b.pushes.len());
             go = clip(PLAYER, go, c.feet, c.params.radius, c.params.height, dt, &mut all, &mut b.pushes);
@@ -1921,14 +1921,14 @@ fn step_npcs_alone(
             *v = if b.carried.contains(&n.ch.id) {
                 crate::blocking::clip_pushing_nobody(n.ch.id, asked, n.ch.feet, radius, n.ch.params.height, dt, &mut all)
             } else {
-                clip(n.ch.id, asked, n.ch.feet, radius, n.ch.params.height, dt, &mut all, &mut pushes)
+                clip(n.ch.id, asked, n.ch.feet, radius, n.ch.params.height, dt, &mut all, pushes)
             };
             stopped |= *v != asked;
         }
         b.steps_actor_blocked += u64::from(stopped);
         pushes.retain(|p| p.actor != PLAYER);
         b.steps_pushing[1] += u64::from(!pushes.is_empty());
-        b.pushes.extend(pushes.drain(..));
+        b.pushes.append(pushes);
         all.truncate(placed);
         b.list = all;
     }
