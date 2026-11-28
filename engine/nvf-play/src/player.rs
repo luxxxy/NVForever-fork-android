@@ -1512,7 +1512,7 @@ fn step(
         for _ in 0..n {
             let _tick = info_span!("phys::tick").entered();
             let began = meter.now();
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, body, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
@@ -1554,7 +1554,7 @@ fn step(
             // Not falling: no fall, landing or fall damage while it flies.
             c.grounded = true;
             c.ground_gap = Some(0.0);
-            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, None, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
+            let listed = step_npcs_alone(&mut p.world, &mut p.npcs, &p.actor_block_radii, &mut walking_scratch, None, blocks.as_deref_mut(), falls.as_deref_mut(), &mut fell);
             p.world.step();
             meter.tick(began, p.npcs.len(), listed);
         }
@@ -1887,6 +1887,7 @@ fn step_npcs_alone(
     world: &mut fnv_phys::PhysWorld,
     npcs: &mut std::collections::BTreeMap<u32, crate::phys::NpcBody>,
     actor_block_radii: &std::collections::HashMap<u32, f32>,
+    walking: &mut Vec<[f32; 2]>,
     player: Option<([f32; 3], f32, f32)>,
     blocks: Option<&mut crate::blocking::ActorBlocks>,
     falls: Option<&mut crate::falls::Falls>,
@@ -1895,7 +1896,8 @@ fn step_npcs_alone(
     use crate::blocking::{clip, Block, Push, PLAYER};
     let dt = world.params.dt;
     let mut listed = None;
-    let mut walking: Vec<[f32; 2]> = npcs.values().map(|b| b.velocity).collect();
+    walking.clear();
+    walking.extend(npcs.values().map(|b| b.velocity));
     for n in npcs.values_mut() {
         n.ch.passes_characters = blocks.is_some();
     }
