@@ -180,7 +180,7 @@ pub fn drive(
     scratch.told.clear();
     scratch.told.extend(st.told.iter().map(|(a, t)| (*a, *t)));
     for (actor, (group, serial)) in scratch.told.iter().copied() {
-        let slot = by_ref.get(&actor).and_then(|e| actors.get_mut(*e).ok());
+        let slot = scratch.by_ref.get(&actor).and_then(|e| actors.get_mut(*e).ok());
         let Some((_, _, Some(mut idle), lo, _)) = slot else {
             st.told.remove(&actor);
             if game.anims.playing(FormId(actor)) == Some(group) {
@@ -205,7 +205,7 @@ pub fn drive(
     scratch.waiting.clear();
     scratch.waiting.extend(st.waiting.keys().copied());
     for actor in scratch.waiting.iter().copied() {
-        let Some(&e) = by_ref.get(&actor) else {
+        let Some(&e) = scratch.by_ref.get(&actor) else {
             if let Some((r, _)) = st.waiting.remove(&actor) {
                 game.anims.set_playing(r.on, None);
             }
@@ -240,7 +240,7 @@ pub fn drive(
         st.stats.asked += 1;
         *st.stats.by_group.entry(group.clone()).or_default() += 1;
         let fresh = st.logged.insert(r.on.0, (r.group, r.start.flag())) != Some((r.group, r.start.flag()));
-        let Some(&e) = by_ref.get(&r.on.0) else {
+        let Some(&e) = scratch.by_ref.get(&r.on.0) else {
             st.stats.not_drawn += 1;
             if fresh {
                 info!("actor group: {who} plays {group} (flag {}): the actor is not drawn", r.start.flag());
