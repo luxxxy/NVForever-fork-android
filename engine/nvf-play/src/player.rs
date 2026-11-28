@@ -1842,7 +1842,7 @@ fn step(
 fn move_npcs(
     world: &mut fnv_phys::PhysWorld,
     npcs: &mut std::collections::BTreeMap<u32, crate::phys::NpcBody>,
-    walking: &mut Vec<[f32; 2]>, 
+    walking: &[[f32; 2]],
     mut falls: Option<&mut crate::falls::Falls>,
     fell: &mut MessageWriter<crate::falls::Fell>,
     dt: f32,
