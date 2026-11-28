@@ -178,6 +178,13 @@ pub struct Stats {
     pub player_stood: u32,
 }
 
+/// Per-frame scratch storage for the furniture actor system.
+#[derive(Default)]
+struct ActorFurnitureScratch {
+    live: std::collections::HashSet<u32>,
+    gone: Vec<(u32, u32)>,
+}
+
 /// The furniture records and who is on what.
 #[derive(Resource)]
 pub struct Furnishings {
@@ -379,14 +386,13 @@ impl Furnishings {
     /// Uses whose actor is gone: its visual was taken away while on the furniture (its
     /// cell was left) or the use ended without getting off. `live` are the actors on
     /// furniture now. Returns (furniture, user) of each use let go of.
-    fn forget_gone(&mut self, live: &std::collections::HashSet<u32>) -> Vec<(u32, u32)> {
+    fn forget_gone(&mut self, live: &std::collections::HashSet<u32>, gone: &mut Vec<(u32, u32)>) {
         let player = FormId::PLAYER_REF.0;
-        let gone: Vec<(u32, u32)> =
-            self.users.iter().flat_map(|(f, us)| us.iter().map(move |(_, u)| (*f, *u))).filter(|(_, u)| *u != player && !live.contains(u)).collect();
-        for (f, u) in &gone {
-            self.release(*f, *u);
+        gone.clear();
+        gone.extend(self.users.iter().flat_map(|(f, us)| us.iter().map(move |(_, u)| (*f, *u))).filter(|(_, u)| *u != player && !live.contains(u)));
+        for &(f, u) in gone.iter() {
+            self.release(f, u);
         }
-        gone
     }
 
     fn release(&mut self, furniture: u32, user: u32) {
@@ -585,13 +591,16 @@ pub fn drive_actors(
     mut using: Query<Seated>,
     mut script: Option<ResMut<ScriptState>>,
     mut nav: Option<ResMut<NavState>>,
+    mut scratch: Local<ActorFurnitureScratch>,
 ) {
     let dt = time.delta_secs().min(0.1);
     // Actors no longer drawn leave their furniture free: drawn again, they are put back
     // on it (`SitOn::at_once`) or go elsewhere [fix of the owner's playtest 2026-10-11:
     // the stool stayed "in use" by its own sitter, who then stood in it].
-    let live: std::collections::HashSet<u32> = using.iter().map(|(_, _, _, on, ..)| on.who.reference).collect();
-    for (furniture, user) in f.forget_gone(&live) {
+    scratch.live.clear();
+    scratch.live.extend(using.iter().map(|(_, _, _, on, ..)| on.who.reference));
+    f.forget_gone(&scratch.live, &mut scratch.gone);
+    for &(furniture, user) in &scratch.gone {
         info!("furniture: {user:08X} is off {furniture:08X} unseen (no longer drawn)");
         tell_scripts(&mut script, user, None);
     }
