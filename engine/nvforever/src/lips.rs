@@ -1362,9 +1362,9 @@ mod tests {
         m.set("CombatAnger", 1.5);
         m.set("Nose", 1.0);
         let mut unknown = HashSet::new();
-        let mut asked = Vec::new();
-        asked(&m, &mut unknown, &mut asked);
-        assert_eq!(asked, vec![(slot("CombatAnger").unwrap(), 1.0)]);
+        let mut got = Vec::new();
+        asked(&m, &mut unknown, &mut got);
+        assert_eq!(got, vec![(slot("CombatAnger").unwrap(), 1.0)]);
         assert!(unknown.contains("Nose"));
     }
 
