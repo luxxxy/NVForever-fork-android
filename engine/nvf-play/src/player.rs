@@ -1469,8 +1469,7 @@ const FELL_THROUGH: f32 = 1000.0;
 #[allow(clippy::too_many_arguments)]
 fn step(
     mut stroke_time: Local<f32>,
-    mut walking_scratch: Local<Vec<[f32; 2]>>,
-    mut pushes_scratch: Local<Vec<crate::blocking::Push>>,
+    mut movement_scratch: Local<(Vec<[f32; 2]>, Vec<crate::blocking::Push>)>,
     time: Res<Time>,
     state: Res<State<PlayState>>,
     d: Res<PlayWorld>,
@@ -1703,7 +1702,7 @@ fn step(
         let blocks_span = info_span!("phys::blocks").entered();
         let mut listed = None;
         let mut go = [vx, vy];
-        let walking = &mut *walking_scratch;
+        let (walking, pushes) = &mut *movement_scratch;
         walking.clear();
         walking.extend(p.npcs.values().map(|b| b.velocity));
         let mut pushed = [0.0f32; 2];
@@ -1722,7 +1721,6 @@ fn step(
             listed = Some(all.len());
             // First the walking actors: what they push is their owner's to move, but for
             // the player, which their pushes move in this step.
-            let pushes = &mut *pushes_scratch;
             pushes.clear();
             let mut stopped = false;
             for (v, n) in walking.iter_mut().zip(p.npcs.values()) {
@@ -1731,7 +1729,7 @@ fn step(
                 *v = if b.carried.contains(&n.ch.id) {
                     crate::blocking::clip_pushing_nobody(n.ch.id, asked, n.ch.feet, radius, n.ch.params.height, dt, &mut all)
                 } else {
-                    clip(n.ch.id, asked, n.ch.feet, radius, n.ch.params.height, dt, &mut all, &mut pushes)
+                    clip(n.ch.id, asked, n.ch.feet, radius, n.ch.params.height, dt, &mut all, &mut *pushes)
                 };
                 stopped |= *v != asked;
             }
@@ -1890,7 +1888,7 @@ fn step_npcs_alone(
     npcs: &mut std::collections::BTreeMap<u32, crate::phys::NpcBody>,
     actor_block_radii: &std::collections::HashMap<u32, f32>,
     walking: &mut Vec<[f32; 2]>,
-    pushes: &mut Vec<crate::blocking::Push>,
+    mut pushes: &mut Vec<crate::blocking::Push>,
     player: Option<([f32; 3], f32, f32)>,
     blocks: Option<&mut crate::blocking::ActorBlocks>,
     falls: Option<&mut crate::falls::Falls>,
